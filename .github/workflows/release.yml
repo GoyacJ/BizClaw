@@ -1,0 +1,134 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  verify-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate release versions
+        run: node ./scripts/verify-release-version.mjs "${GITHUB_REF_NAME}"
+
+      - name: Run web tests
+        run: pnpm test:web
+
+  build-macos:
+    needs: verify-version
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Rust stable
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+
+      - name: Run Rust tests
+        run: pnpm test:rust
+
+      - name: Build macOS app bundle
+        run: pnpm tauri build --bundles app
+
+      - name: Build macOS DMG
+        run: pnpm bundle:mac-dmg
+
+      - name: Upload macOS release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: bizclaw-macos
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  build-windows:
+    needs: verify-version
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Rust stable
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+
+      - name: Build Windows MSI
+        run: pnpm tauri build --bundles msi
+
+      - name: Upload Windows release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: bizclaw-windows
+          path: src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+
+  publish-release:
+    needs:
+      - build-macos
+      - build-windows
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || \
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "BizClaw ${GITHUB_REF_NAME}" \
+            --notes "Automated BizClaw release for ${GITHUB_REF_NAME}."
+
+      - name: Upload packaged assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" release-artifacts/* --clobber

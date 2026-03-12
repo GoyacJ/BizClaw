@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "BizClaw",
+  "version": "0.1.0",
+  "identifier": "com.goyacj.bizclaw",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "BizClaw",
+        "width": 1480,
+        "height": 980,
+        "minWidth": 1120,
+        "minHeight": 780,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": false,
+    "category": "DeveloperTool",
+    "shortDescription": "BizClaw 桌面接入工具",
+    "longDescription": "用于在 macOS 和 Windows 上检测 OpenClaw、引导安装、保存接入配置，并托管 SSH 隧道与 OpenClaw Node。",
+    "macOS": {
+      "minimumSystemVersion": "13.0"
+    },
+    "windows": {
+      "wix": {
+        "language": ["zh-CN"]
+      }
+    }
+  }
+}

@@ -60,6 +60,15 @@ describe('release workflow', () => {
     expect(jobBlock).not.toMatch(/uses:\s*actions\/checkout@/u)
   })
 
+  it('uploads only downloaded release files, not artifact directories', () => {
+    const jobBlock = readJobBlock('publish-release')
+
+    expect(jobBlock).toMatch(/find release-artifacts -type f/u)
+    expect(jobBlock).toMatch(/mapfile -d '' assets/u)
+    expect(jobBlock).toMatch(/gh release upload "\$\{GITHUB_REF_NAME\}" --repo "\$\{GITHUB_REPOSITORY\}" "\$\{assets\[@\]\}" --clobber/u)
+    expect(jobBlock).not.toMatch(/release-artifacts\/\*/u)
+  })
+
   it('preinstalls WiX before building the Windows MSI', () => {
     const jobBlock = readJobBlock('build-windows')
 

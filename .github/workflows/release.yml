@@ -165,4 +165,10 @@ jobs:
       - name: Upload packaged assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" release-artifacts/* --clobber
+        run: |
+          mapfile -d '' assets < <(find release-artifacts -type f -print0 | sort -z)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No release assets found in release-artifacts" >&2
+            exit 1
+          fi
+          gh release upload "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" "${assets[@]}" --clobber

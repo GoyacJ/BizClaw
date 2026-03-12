@@ -21,7 +21,8 @@ const LOG_LIMIT: usize = 400;
 const SSH_BOOT_WAIT: Duration = Duration::from_secs(2);
 const SSH_TUNNEL_READY_TIMEOUT: Duration = Duration::from_secs(6);
 const SSH_TUNNEL_POLL_INTERVAL: Duration = Duration::from_millis(150);
-const NODE_BOOT_WAIT: Duration = Duration::from_secs(1);
+const DEFAULT_NODE_BOOT_WAIT: Duration = Duration::from_secs(1);
+const WINDOWS_NODE_BOOT_WAIT: Duration = Duration::from_secs(4);
 
 #[derive(Default)]
 pub struct RuntimeSupervisor {
@@ -97,10 +98,19 @@ pub fn start_runtime_processes(
     ensure_process_alive(&state, &app, ManagedProcess::Ssh)?;
     wait_for_ssh_tunnel(&state, &app, company_profile.local_port)?;
 
-    append_log(&state, &app, "system", "info", "SSH 隧道已建立，正在启动 OpenClaw Node");
-    let mut node_child =
-        spawn_command(&build_openclaw_command(company_profile, user_profile, token))
-            .context("无法启动 OpenClaw Node")?;
+    append_log(
+        &state,
+        &app,
+        "system",
+        "info",
+        "SSH 隧道已建立，正在启动 OpenClaw Node",
+    );
+    let mut node_child = spawn_command(&build_openclaw_command(
+        company_profile,
+        user_profile,
+        token,
+    ))
+    .context("无法启动 OpenClaw Node")?;
     attach_child_logs(
         &app,
         &state,
@@ -113,8 +123,7 @@ pub fn start_runtime_processes(
         guard.node_child = Some(node_child);
     }
 
-    thread::sleep(NODE_BOOT_WAIT);
-    ensure_process_alive(&state, &app, ManagedProcess::OpenClaw)?;
+    wait_for_node_process(&state, &app)?;
 
     {
         let mut guard = state.lock().expect("runtime mutex poisoned");
@@ -255,15 +264,17 @@ fn kill_child(child: &mut Child, label: &str) -> Result<()> {
     Ok(())
 }
 
-fn wait_for_ssh_tunnel(
-    state: &SharedRuntimeState,
-    app: &AppHandle,
-    local_port: u16,
-) -> Result<()> {
+fn wait_for_ssh_tunnel(state: &SharedRuntimeState, app: &AppHandle, local_port: u16) -> Result<()> {
     let started = std::time::Instant::now();
 
     loop {
-        if wait_for_local_port(local_port, SSH_TUNNEL_POLL_INTERVAL, SSH_TUNNEL_POLL_INTERVAL).is_ok() {
+        if wait_for_local_port(
+            local_port,
+            SSH_TUNNEL_POLL_INTERVAL,
+            SSH_TUNNEL_POLL_INTERVAL,
+        )
+        .is_ok()
+        {
             return Ok(());
         }
 
@@ -271,7 +282,10 @@ fn wait_for_ssh_tunnel(
 
         if started.elapsed() >= SSH_TUNNEL_READY_TIMEOUT {
             cleanup_processes(state);
-            let detail = format!("SSH 本地端口 {} 未就绪，请检查 SSH 登录和端口转发配置", local_port);
+            let detail = format!(
+                "SSH 本地端口 {} 未就绪，请检查 SSH 登录和端口转发配置",
+                local_port
+            );
             mark_runtime_error(state, app, &detail);
             let recent = recent_logs(state);
             return Err(anyhow!("{}\n{}", detail, recent));
@@ -316,6 +330,33 @@ fn wait_for_local_port(port: u16, max_wait: Duration, poll_interval: Duration) -
             }
             Err(_) => thread::sleep(poll_interval),
         }
+    }
+}
+
+fn wait_for_node_process(state: &SharedRuntimeState, app: &AppHandle) -> Result<()> {
+    let started = std::time::Instant::now();
+    let boot_wait = node_boot_wait();
+
+    loop {
+        ensure_process_alive(state, app, ManagedProcess::OpenClaw)?;
+
+        if started.elapsed() >= boot_wait {
+            return Ok(());
+        }
+
+        thread::sleep(SSH_TUNNEL_POLL_INTERVAL);
+    }
+}
+
+fn node_boot_wait() -> Duration {
+    node_boot_wait_for_os(std::env::consts::OS)
+}
+
+fn node_boot_wait_for_os(operating_system: &str) -> Duration {
+    if operating_system == "windows" {
+        WINDOWS_NODE_BOOT_WAIT
+    } else {
+        DEFAULT_NODE_BOOT_WAIT
     }
 }
 
@@ -389,20 +430,18 @@ impl ManagedProcess {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        net::TcpListener,
-        thread,
-        time::Duration,
-    };
+    use std::{net::TcpListener, thread, time::Duration};
 
-    use super::wait_for_local_port;
+    use super::{node_boot_wait_for_os, wait_for_local_port};
 
     #[test]
     fn waits_until_local_port_becomes_available() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
 
-        assert!(wait_for_local_port(port, Duration::from_millis(50), Duration::from_millis(10)).is_ok());
+        assert!(
+            wait_for_local_port(port, Duration::from_millis(50), Duration::from_millis(10)).is_ok()
+        );
     }
 
     #[test]
@@ -413,6 +452,12 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("本地 SSH 隧道端口"));
+    }
+
+    #[test]
+    fn windows_node_boot_wait_is_longer_than_default() {
+        assert_eq!(node_boot_wait_for_os("windows"), Duration::from_secs(4));
+        assert_eq!(node_boot_wait_for_os("macos"), Duration::from_secs(1));
     }
 
     fn unused_local_port() -> u16 {

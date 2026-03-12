@@ -58,29 +58,51 @@ pub fn build_ssh_command(
 }
 
 pub fn build_openclaw_command(
-    _profile: &CompanyProfile,
-    _user_profile: &UserProfile,
-    _token: &str,
+    profile: &CompanyProfile,
+    user_profile: &UserProfile,
+    token: &str,
 ) -> CommandSpec {
+    build_openclaw_command_for_os(std::env::consts::OS, profile, user_profile, token)
+}
+
+fn build_openclaw_command_for_os(
+    operating_system: &str,
+    profile: &CompanyProfile,
+    user_profile: &UserProfile,
+    token: &str,
+) -> CommandSpec {
+    let openclaw_args = vec![
+        "node".into(),
+        "run".into(),
+        "--host".into(),
+        "127.0.0.1".into(),
+        "--port".into(),
+        profile.local_port.to_string(),
+        "--display-name".into(),
+        user_profile.display_name.clone(),
+    ];
+
+    if operating_system == "windows" {
+        let mut args = vec!["/d".into(), "/c".into(), "openclaw".into()];
+        args.extend(openclaw_args);
+
+        return CommandSpec {
+            program: "cmd".into(),
+            args,
+            envs: vec![("OPENCLAW_GATEWAY_TOKEN".into(), token.into())],
+        };
+    }
+
     CommandSpec {
         program: "openclaw".into(),
-        args: vec![
-            "node".into(),
-            "run".into(),
-            "--host".into(),
-            "127.0.0.1".into(),
-            "--port".into(),
-            _profile.local_port.to_string(),
-            "--display-name".into(),
-            _user_profile.display_name.clone(),
-        ],
-        envs: vec![("OPENCLAW_GATEWAY_TOKEN".into(), _token.into())],
+        args: openclaw_args,
+        envs: vec![("OPENCLAW_GATEWAY_TOKEN".into(), token.into())],
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{build_openclaw_command, build_ssh_command};
+    use super::{build_openclaw_command, build_openclaw_command_for_os, build_ssh_command};
     use crate::types::{CompanyProfile, UserProfile};
 
     fn sample_company_profile() -> CompanyProfile {
@@ -120,10 +142,7 @@ mod tests {
     fn ssh_command_can_switch_to_password_auth_with_askpass() {
         let profile = sample_company_profile();
 
-        let command = build_ssh_command(
-            &profile,
-            Some(("/tmp/bizclaw-askpass", "ssh-password")),
-        );
+        let command = build_ssh_command(&profile, Some(("/tmp/bizclaw-askpass", "ssh-password")));
 
         assert_eq!(command.program, "ssh");
         assert_eq!(
@@ -178,6 +197,40 @@ mod tests {
                 "32001",
                 "--display-name",
                 "BizClaw Mac",
+            ]
+        );
+        assert_eq!(
+            command.envs,
+            vec![("OPENCLAW_GATEWAY_TOKEN".into(), "gateway-token".into())]
+        );
+    }
+
+    #[test]
+    fn openclaw_command_uses_cmd_wrapper_on_windows() {
+        let company = sample_company_profile();
+        let user = UserProfile {
+            display_name: "BizClaw Windows".into(),
+            auto_connect: true,
+            run_in_background: true,
+        };
+
+        let command = build_openclaw_command_for_os("windows", &company, &user, "gateway-token");
+
+        assert_eq!(command.program, "cmd");
+        assert_eq!(
+            command.args,
+            vec![
+                "/d",
+                "/c",
+                "openclaw",
+                "node",
+                "run",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "32001",
+                "--display-name",
+                "BizClaw Windows",
             ]
         );
         assert_eq!(

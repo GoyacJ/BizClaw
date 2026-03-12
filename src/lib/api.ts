@@ -24,11 +24,13 @@ export const saveProfile = (
   companyProfile: CompanyProfile,
   userProfile: UserProfile,
   token: string,
+  sshPassword: string,
 ) =>
   invoke<PersistedSettings>('save_profile', {
     companyProfile,
     userProfile,
     token,
+    sshPassword,
   })
 
 export const startRuntime = () => invoke<RuntimeStatus>('start_runtime')

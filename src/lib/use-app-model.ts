@@ -17,7 +17,14 @@ import {
   isCompanyProfileDraftComplete,
   normalizeCompanyProfileDraft,
 } from '@/lib/profile-form'
-import { buildWorkflow } from '@/lib/runtime-view'
+import {
+  buildInstallSummary,
+  buildWorkflow,
+  shouldShowInstallConsole,
+  startRuntimeDisabledReason,
+  tokenStatusLabel,
+  tokenStatusTone,
+} from '@/lib/runtime-view'
 import type {
   CompanyProfileDraft,
   EnvironmentSnapshot,
@@ -38,8 +45,10 @@ export function useAppModel() {
   const installResult = ref<InstallResult | null>(null)
   const logs = ref<LogEntry[]>([])
   const lastError = ref<string | null>(null)
+  const lastErrorAction = ref<string | null>(null)
   const busyAction = ref<string | null>(null)
   const advancedOpen = ref(false)
+  const sshPasswordInput = ref('')
   const tokenInput = ref('')
   const hydratedFromSaved = ref(false)
   const companyProfile = reactive<CompanyProfileDraft>(createEmptyCompanyProfileDraft())
@@ -49,23 +58,53 @@ export function useAppModel() {
   const workflow = computed(() => buildWorkflow(environment.value))
   const companyProfileComplete = computed(() => isCompanyProfileDraftComplete(companyProfile))
   const displayNameReady = computed(() => userProfile.displayName.trim().length > 0)
-  const tokenReady = computed(() => (
-    tokenInput.value.trim().length > 0 || Boolean(environment.value?.hasSavedToken)
-  ))
+  const tokenInputReady = computed(() => tokenInput.value.trim().length > 0)
+  const tokenStored = computed(() => environment.value?.tokenStatus === 'saved')
+  const tokenReady = computed(() => tokenInputReady.value || tokenStored.value)
   const canSaveProfile = computed(() => (
     companyProfileComplete.value
     && displayNameReady.value
     && tokenReady.value
     && !busyAction.value
   ))
-  const canConnect = computed(() => (
+  const canSaveAndConnect = computed(() => (
     canSaveProfile.value && Boolean(environment.value?.openclawInstalled)
   ))
+  const connectDisabledReason = computed(() => (
+    startRuntimeDisabledReason(environment.value, busyAction.value)
+  ))
+  const canStartHostedRuntime = computed(() => !connectDisabledReason.value)
+  const tokenStateLabel = computed(() => tokenStatusLabel(environment.value))
+  const tokenStateToneValue = computed(() => tokenStatusTone(environment.value))
+  const installSummary = computed(() => buildInstallSummary(
+    environment.value,
+    installResult.value,
+    busyAction.value,
+  ))
+  const showInstallConsole = computed(() => shouldShowInstallConsole(installResult.value))
   const runtimeStatus = computed<RuntimeStatus>(() => environment.value?.runtimeStatus ?? {
     phase: 'checking',
     sshConnected: false,
     nodeConnected: false,
     lastError: null,
+  })
+  const profileError = computed(() => {
+    if (lastErrorAction.value === 'save' || lastErrorAction.value === 'connect') {
+      return lastError.value
+    }
+
+    if (environment.value?.tokenStatus === 'error') {
+      return environment.value.tokenStatusMessage
+    }
+
+    return null
+  })
+  const runtimeError = computed(() => {
+    if (lastErrorAction.value === 'start' || lastErrorAction.value === 'stop') {
+      return lastError.value
+    }
+
+    return runtimeStatus.value.lastError ?? null
   })
 
   async function refreshEnvironment() {
@@ -82,26 +121,37 @@ export function useAppModel() {
     logs.value = await streamLogs()
   }
 
-  async function withBusy<T>(label: string, action: () => Promise<T>) {
+  async function withBusy<T>(label: string, action: () => Promise<T>): Promise<T | null> {
     busyAction.value = label
     lastError.value = null
+    lastErrorAction.value = null
+
     try {
-      return await action()
+      const result = await action()
+      lastErrorAction.value = null
+      return result
     } catch (error) {
       lastError.value = error instanceof Error ? error.message : String(error)
-      throw error
+      lastErrorAction.value = label
+      return null
     } finally {
       busyAction.value = null
     }
   }
 
   async function installCli() {
-    installResult.value = await withBusy('install', () =>
+    const result = await withBusy('install', () =>
       installOpenClaw({
         preferOfficial: true,
         allowElevation: true,
       }),
     )
+
+    if (!result) {
+      return
+    }
+
+    installResult.value = result
     await refreshEnvironment()
   }
 
@@ -110,49 +160,92 @@ export function useAppModel() {
   }
 
   async function saveOnly() {
-    await withBusy('save', async () => {
+    const result = await withBusy('save', async () => {
       const normalizedCompanyProfile = normalizeCompanyProfileDraft(companyProfile)
-      await saveProfile(
+      return saveProfile(
         normalizedCompanyProfile,
         { ...userProfile },
         tokenInput.value,
+        sshPasswordInput.value,
       )
-      tokenInput.value = ''
-      await refreshEnvironment()
     })
+
+    if (!result) {
+      return
+    }
+
+    tokenInput.value = ''
+    sshPasswordInput.value = ''
+    await refreshEnvironment()
   }
 
   async function saveAndConnect() {
-    await withBusy('connect', async () => {
+    const result = await withBusy('connect', async () => {
       const normalizedCompanyProfile = normalizeCompanyProfileDraft(companyProfile)
       await saveProfile(
         normalizedCompanyProfile,
         { ...userProfile },
         tokenInput.value,
+        sshPasswordInput.value,
       )
+
       tokenInput.value = ''
-      environment.value = {
-        ...(environment.value ?? await detectEnvironment()),
-        runtimeStatus: {
-          ...runtimeStatus.value,
-          phase: 'connecting',
-        },
-      }
+      sshPasswordInput.value = ''
+      return startHostedRuntimeCore()
+    })
+
+    if (!result) {
+      return
+    }
+
+    await refreshEnvironment()
+  }
+
+  async function startHostedRuntime() {
+    const result = await withBusy('start', async () => startHostedRuntimeCore())
+
+    if (!result) {
+      return
+    }
+
+    await refreshEnvironment()
+  }
+
+  async function startHostedRuntimeCore() {
+    const previousEnvironment = environment.value ?? await detectEnvironment()
+    environment.value = {
+      ...previousEnvironment,
+      runtimeStatus: {
+        ...runtimeStatus.value,
+        phase: 'connecting',
+      },
+    }
+
+    try {
       environment.value.runtimeStatus = await startRuntime()
       logs.value = await streamLogs()
-      await refreshEnvironment()
-    })
+      return environment.value.runtimeStatus
+    } catch (error) {
+      environment.value = previousEnvironment
+      throw error
+    }
   }
 
   async function stopHostedRuntime() {
-    await withBusy('stop', async () => {
+    const result = await withBusy('stop', async () => {
       environment.value = environment.value && {
         ...environment.value,
         runtimeStatus: await stopRuntime(),
       }
       logs.value = await streamLogs()
-      await refreshEnvironment()
+      return environment.value?.runtimeStatus ?? null
     })
+
+    if (!result) {
+      return
+    }
+
+    await refreshEnvironment()
   }
 
   onMounted(async () => {
@@ -167,6 +260,7 @@ export function useAppModel() {
         if (!environment.value) {
           return
         }
+
         environment.value = {
           ...environment.value,
           runtimeStatus: status,
@@ -184,21 +278,31 @@ export function useAppModel() {
   return {
     advancedOpen,
     busyAction,
-    canConnect,
+    canSaveAndConnect,
     canSaveProfile,
+    canStartHostedRuntime,
     companyProfile,
+    connectDisabledReason,
     environment,
     installCli,
     installResult,
+    installSummary,
     lastError,
     launchManualInstall,
     logs,
+    profileError,
     refreshEnvironment,
+    runtimeError,
     runtimeStatus,
     saveAndConnect,
     saveOnly,
+    showInstallConsole,
+    startHostedRuntime,
     stopHostedRuntime,
+    sshPasswordInput,
     tokenInput,
+    tokenStateLabel,
+    tokenStateToneValue,
     userProfile,
     workflow,
   }

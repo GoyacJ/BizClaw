@@ -1,6 +1,6 @@
 # BizClaw
 
-BizClaw 是一个内部使用的桌面客户端，用来引导安装 `openclaw`、保存本机连接配置、把 `OPENCLAW_GATEWAY_TOKEN` 写入系统安全存储，并托管 SSH 隧道与 OpenClaw Node。
+BizClaw 是一个内部使用的桌面客户端，用来引导安装 `openclaw`、保存本机连接配置、把 `OPENCLAW_GATEWAY_TOKEN` 和可选的 SSH 密码写入应用本地存储，并托管 SSH 隧道与 OpenClaw Node。
 
 ## 开发
 
@@ -15,7 +15,8 @@ pnpm tauri:dev
 - 安装包不内置任何公司连接参数。
 - 首次启动时手动填写 SSH 主机、用户、端口和显示名称。
 - 非敏感配置保存到应用数据目录。
-- `OPENCLAW_GATEWAY_TOKEN` 仅保存到 macOS Keychain / Windows Credential Manager。
+- `OPENCLAW_GATEWAY_TOKEN` 保存在应用数据目录下的本地文件中。
+- 如目标主机不支持密钥登录，可选的 SSH 密码也会保存在应用数据目录下的本地文件中，供后台托管时复用。
 
 ## 发版
 

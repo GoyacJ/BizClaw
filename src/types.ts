@@ -46,10 +46,12 @@ export interface EnvironmentSnapshot {
   os: string
   sshInstalled: boolean
   openclawInstalled: boolean
+  openclawVersion: string | null
   npmInstalled: boolean
   pnpmInstalled: boolean
   hasSavedProfile: boolean
-  hasSavedToken: boolean
+  tokenStatus: 'saved' | 'missing' | 'error'
+  tokenStatusMessage: string | null
   savedSettings: PersistedSettings | null
   runtimeStatus: RuntimeStatus
   installRecommendation: string

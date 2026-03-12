@@ -7,19 +7,53 @@ pub struct CommandSpec {
     pub envs: Vec<(String, String)>,
 }
 
-pub fn build_ssh_command(_profile: &CompanyProfile) -> CommandSpec {
+pub fn build_ssh_command(
+    profile: &CompanyProfile,
+    password_auth: Option<(&str, &str)>,
+) -> CommandSpec {
+    let mut args = vec!["-N".into()];
+    let mut envs = Vec::new();
+
+    if let Some((askpass_program, password)) = password_auth {
+        args.extend([
+            "-o".into(),
+            "ExitOnForwardFailure=yes".into(),
+            "-o".into(),
+            "PreferredAuthentications=password,keyboard-interactive".into(),
+            "-o".into(),
+            "PubkeyAuthentication=no".into(),
+            "-o".into(),
+            "NumberOfPasswordPrompts=1".into(),
+        ]);
+        envs.extend([
+            ("SSH_ASKPASS".into(), askpass_program.into()),
+            ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
+            ("DISPLAY".into(), "bizclaw:0".into()),
+            ("BIZCLAW_SSH_ASKPASS".into(), "1".into()),
+            ("BIZCLAW_SSH_PASSWORD".into(), password.into()),
+        ]);
+    } else {
+        args.extend([
+            "-o".into(),
+            "BatchMode=yes".into(),
+            "-o".into(),
+            "ExitOnForwardFailure=yes".into(),
+        ]);
+    }
+
+    args.extend([
+        "-L".into(),
+        format!(
+            "{}:{}:{}",
+            profile.local_port, profile.remote_bind_host, profile.remote_bind_port
+        ),
+        format!("{}@{}", profile.ssh_user, profile.ssh_host),
+    ]);
+
     CommandSpec {
         program: "ssh".into(),
-        args: vec![
-            "-N".into(),
-            "-L".into(),
-            format!(
-                "{}:{}:{}",
-                _profile.local_port, _profile.remote_bind_host, _profile.remote_bind_port
-            ),
-            format!("{}@{}", _profile.ssh_user, _profile.ssh_host),
-        ],
-        envs: Vec::new(),
+        args,
+        envs,
     }
 }
 
@@ -63,12 +97,61 @@ mod tests {
     fn ssh_command_matches_company_profile_values() {
         let profile = sample_company_profile();
 
-        let command = build_ssh_command(&profile);
+        let command = build_ssh_command(&profile, None);
 
         assert_eq!(command.program, "ssh");
         assert_eq!(
             command.args,
-            vec!["-N", "-L", "32001:localhost:32002", "bizclaw@gateway.example.com",]
+            vec![
+                "-N",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-L",
+                "32001:localhost:32002",
+                "bizclaw@gateway.example.com",
+            ]
+        );
+        assert!(command.envs.is_empty());
+    }
+
+    #[test]
+    fn ssh_command_can_switch_to_password_auth_with_askpass() {
+        let profile = sample_company_profile();
+
+        let command = build_ssh_command(
+            &profile,
+            Some(("/tmp/bizclaw-askpass", "ssh-password")),
+        );
+
+        assert_eq!(command.program, "ssh");
+        assert_eq!(
+            command.args,
+            vec![
+                "-N",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-o",
+                "PreferredAuthentications=password,keyboard-interactive",
+                "-o",
+                "PubkeyAuthentication=no",
+                "-o",
+                "NumberOfPasswordPrompts=1",
+                "-L",
+                "32001:localhost:32002",
+                "bizclaw@gateway.example.com",
+            ]
+        );
+        assert_eq!(
+            command.envs,
+            vec![
+                ("SSH_ASKPASS".into(), "/tmp/bizclaw-askpass".into()),
+                ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
+                ("DISPLAY".into(), "bizclaw:0".into()),
+                ("BIZCLAW_SSH_ASKPASS".into(), "1".into()),
+                ("BIZCLAW_SSH_PASSWORD".into(), "ssh-password".into()),
+            ]
         );
     }
 

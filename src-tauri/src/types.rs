@@ -64,13 +64,23 @@ pub struct EnvironmentSnapshot {
     pub os: String,
     pub ssh_installed: bool,
     pub openclaw_installed: bool,
+    pub openclaw_version: Option<String>,
     pub npm_installed: bool,
     pub pnpm_installed: bool,
     pub has_saved_profile: bool,
-    pub has_saved_token: bool,
+    pub token_status: TokenStatus,
+    pub token_status_message: Option<String>,
     pub saved_settings: Option<PersistedSettings>,
     pub runtime_status: RuntimeStatus,
     pub install_recommendation: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TokenStatus {
+    Saved,
+    Missing,
+    Error,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

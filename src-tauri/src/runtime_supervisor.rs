@@ -1,6 +1,7 @@
 use std::{
     collections::VecDeque,
     io::{BufRead, BufReader},
+    net::{SocketAddr, TcpStream},
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
@@ -18,6 +19,8 @@ use crate::{
 
 const LOG_LIMIT: usize = 400;
 const SSH_BOOT_WAIT: Duration = Duration::from_secs(2);
+const SSH_TUNNEL_READY_TIMEOUT: Duration = Duration::from_secs(6);
+const SSH_TUNNEL_POLL_INTERVAL: Duration = Duration::from_millis(150);
 const NODE_BOOT_WAIT: Duration = Duration::from_secs(1);
 
 #[derive(Default)]
@@ -58,6 +61,7 @@ pub fn start_runtime_processes(
     company_profile: &CompanyProfile,
     user_profile: &UserProfile,
     token: &str,
+    ssh_password: Option<&str>,
 ) -> Result<RuntimeStatus> {
     stop_runtime_processes(state.clone(), app.clone()).ok();
 
@@ -75,7 +79,8 @@ pub fn start_runtime_processes(
         format!("准备建立到 {} 的 SSH 隧道", company_profile.ssh_host),
     );
 
-    let mut ssh_child = spawn_command(&build_ssh_command(company_profile)).context("无法启动 SSH 隧道")?;
+    let ssh_command = build_runtime_ssh_command(company_profile, ssh_password)?;
+    let mut ssh_child = spawn_command(&ssh_command).context("无法启动 SSH 隧道")?;
     attach_child_logs(
         &app,
         &state,
@@ -90,6 +95,7 @@ pub fn start_runtime_processes(
 
     thread::sleep(SSH_BOOT_WAIT);
     ensure_process_alive(&state, &app, ManagedProcess::Ssh)?;
+    wait_for_ssh_tunnel(&state, &app, company_profile.local_port)?;
 
     append_log(&state, &app, "system", "info", "SSH 隧道已建立，正在启动 OpenClaw Node");
     let mut node_child =
@@ -126,6 +132,21 @@ pub fn start_runtime_processes(
     Ok(snapshot_status(&state))
 }
 
+fn build_runtime_ssh_command(
+    company_profile: &CompanyProfile,
+    ssh_password: Option<&str>,
+) -> Result<CommandSpec> {
+    if let Some(password) = ssh_password {
+        let askpass_program = std::env::current_exe().context("无法定位 SSH 密码辅助程序")?;
+        return Ok(build_ssh_command(
+            company_profile,
+            Some((askpass_program.to_string_lossy().as_ref(), password)),
+        ));
+    }
+
+    Ok(build_ssh_command(company_profile, None))
+}
+
 pub fn stop_runtime_processes(state: SharedRuntimeState, app: AppHandle) -> Result<RuntimeStatus> {
     let mut node_child = {
         let mut guard = state.lock().expect("runtime mutex poisoned");
@@ -157,6 +178,7 @@ pub fn stop_runtime_processes(state: SharedRuntimeState, app: AppHandle) -> Resu
 fn spawn_command(spec: &CommandSpec) -> Result<Child> {
     let mut command = Command::new(&spec.program);
     command.args(&spec.args);
+    command.stdin(Stdio::null());
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     for (key, value) in &spec.envs {
         command.env(key, value);
@@ -233,6 +255,46 @@ fn kill_child(child: &mut Child, label: &str) -> Result<()> {
     Ok(())
 }
 
+fn wait_for_ssh_tunnel(
+    state: &SharedRuntimeState,
+    app: &AppHandle,
+    local_port: u16,
+) -> Result<()> {
+    let started = std::time::Instant::now();
+
+    loop {
+        if wait_for_local_port(local_port, SSH_TUNNEL_POLL_INTERVAL, SSH_TUNNEL_POLL_INTERVAL).is_ok() {
+            return Ok(());
+        }
+
+        ensure_process_alive(state, app, ManagedProcess::Ssh)?;
+
+        if started.elapsed() >= SSH_TUNNEL_READY_TIMEOUT {
+            cleanup_processes(state);
+            let detail = format!("SSH 本地端口 {} 未就绪，请检查 SSH 登录和端口转发配置", local_port);
+            mark_runtime_error(state, app, &detail);
+            let recent = recent_logs(state);
+            return Err(anyhow!("{}\n{}", detail, recent));
+        }
+
+        thread::sleep(SSH_TUNNEL_POLL_INTERVAL);
+    }
+}
+
+fn cleanup_processes(state: &SharedRuntimeState) {
+    let (mut ssh_child, mut node_child) = {
+        let mut guard = state.lock().expect("runtime mutex poisoned");
+        (guard.ssh_child.take(), guard.node_child.take())
+    };
+
+    if let Some(child) = node_child.as_mut() {
+        let _ = kill_child(child, "OpenClaw Node");
+    }
+    if let Some(child) = ssh_child.as_mut() {
+        let _ = kill_child(child, "SSH 隧道");
+    }
+}
+
 fn mark_runtime_error(state: &SharedRuntimeState, app: &AppHandle, message: &str) {
     {
         let mut guard = state.lock().expect("runtime mutex poisoned");
@@ -240,6 +302,21 @@ fn mark_runtime_error(state: &SharedRuntimeState, app: &AppHandle, message: &str
     }
     emit_status(state, app);
     append_log(state, app, "system", "error", message.to_string());
+}
+
+fn wait_for_local_port(port: u16, max_wait: Duration, poll_interval: Duration) -> Result<()> {
+    let started = std::time::Instant::now();
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+
+    loop {
+        match TcpStream::connect_timeout(&address, poll_interval) {
+            Ok(_) => return Ok(()),
+            Err(error) if started.elapsed() >= max_wait => {
+                return Err(anyhow!("本地 SSH 隧道端口 {} 未就绪: {}", port, error));
+            }
+            Err(_) => thread::sleep(poll_interval),
+        }
+    }
 }
 
 fn emit_status(state: &SharedRuntimeState, app: &AppHandle) {
@@ -307,5 +384,42 @@ impl ManagedProcess {
             Self::Ssh => runtime.ssh_child.as_mut(),
             Self::OpenClaw => runtime.node_child.as_mut(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        net::TcpListener,
+        thread,
+        time::Duration,
+    };
+
+    use super::wait_for_local_port;
+
+    #[test]
+    fn waits_until_local_port_becomes_available() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        assert!(wait_for_local_port(port, Duration::from_millis(50), Duration::from_millis(10)).is_ok());
+    }
+
+    #[test]
+    fn times_out_when_local_port_never_opens() {
+        let port = unused_local_port();
+
+        let error = wait_for_local_port(port, Duration::from_millis(80), Duration::from_millis(20))
+            .unwrap_err();
+
+        assert!(error.to_string().contains("本地 SSH 隧道端口"));
+    }
+
+    fn unused_local_port() -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        thread::sleep(Duration::from_millis(10));
+        port
     }
 }

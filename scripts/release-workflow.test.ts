@@ -51,6 +51,15 @@ describe('release workflow', () => {
     expect(readJobBlock('publish-release')).toMatch(/uses:\s*actions\/download-artifact@v7/u)
   })
 
+  it('publishes releases without relying on a checked out git repository', () => {
+    const jobBlock = readJobBlock('publish-release')
+
+    expect(jobBlock).toMatch(/gh release view "\$\{GITHUB_REF_NAME\}" --repo "\$\{GITHUB_REPOSITORY\}"/u)
+    expect(jobBlock).toMatch(/gh release create "\$\{GITHUB_REF_NAME\}"[\s\S]*--repo "\$\{GITHUB_REPOSITORY\}"/u)
+    expect(jobBlock).toMatch(/gh release upload "\$\{GITHUB_REF_NAME\}" --repo "\$\{GITHUB_REPOSITORY\}"/u)
+    expect(jobBlock).not.toMatch(/uses:\s*actions\/checkout@/u)
+  })
+
   it('preinstalls WiX before building the Windows MSI', () => {
     const jobBlock = readJobBlock('build-windows')
 

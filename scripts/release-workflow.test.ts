@@ -23,18 +23,22 @@ describe('release workflow', () => {
     expect(packageJson.packageManager).toBe('pnpm@10.11.0')
   })
 
-  it.each(releaseJobs)('%s installs pnpm before enabling setup-node cache', (jobName) => {
+  it.each(releaseJobs)('%s installs pnpm via corepack instead of the deprecated pnpm action', (jobName) => {
     const jobBlock = readJobBlock(jobName)
 
-    expect(jobBlock).toMatch(/uses:\s*pnpm\/action-setup@v4/u)
     expect(jobBlock).toMatch(/uses:\s*actions\/setup-node@v6/u)
-    expect(jobBlock).toMatch(/cache:\s*pnpm/u)
+    expect(jobBlock).toMatch(/run:\s*corepack enable/u)
+    expect(jobBlock).toMatch(/corepack prepare pnpm@10\.11\.0 --activate/u)
+    expect(jobBlock).not.toMatch(/pnpm\/action-setup@/u)
+    expect(jobBlock).not.toMatch(/cache:\s*pnpm/u)
 
-    const pnpmSetupIndex = jobBlock.indexOf('uses: pnpm/action-setup@v4')
     const setupNodeIndex = jobBlock.indexOf('uses: actions/setup-node@v6')
+    const corepackEnableIndex = jobBlock.indexOf('run: corepack enable')
+    const corepackPrepareIndex = jobBlock.indexOf('corepack prepare pnpm@10.11.0 --activate')
 
-    expect(pnpmSetupIndex).toBeGreaterThanOrEqual(0)
-    expect(setupNodeIndex).toBeGreaterThan(pnpmSetupIndex)
+    expect(setupNodeIndex).toBeGreaterThanOrEqual(0)
+    expect(corepackEnableIndex).toBeGreaterThan(setupNodeIndex)
+    expect(corepackPrepareIndex).toBeGreaterThan(corepackEnableIndex)
   })
 
   it.each(releaseJobs)('%s uses a node24-compatible checkout action', (jobName) => {
@@ -45,6 +49,21 @@ describe('release workflow', () => {
     expect(readJobBlock('build-macos')).toMatch(/uses:\s*actions\/upload-artifact@v6/u)
     expect(readJobBlock('build-windows')).toMatch(/uses:\s*actions\/upload-artifact@v6/u)
     expect(readJobBlock('publish-release')).toMatch(/uses:\s*actions\/download-artifact@v7/u)
+  })
+
+  it('preinstalls WiX before building the Windows MSI', () => {
+    const jobBlock = readJobBlock('build-windows')
+
+    expect(jobBlock).toMatch(/choco install wixtoolset/u)
+    expect(jobBlock).toMatch(/WiX Toolset v3\.14\\bin/u)
+    expect(jobBlock).toMatch(/"WIX=\$wixBin"\s*\|\s*Out-File\s+-FilePath \$env:GITHUB_ENV/u)
+    expect(jobBlock).toMatch(/pnpm tauri build --bundles msi/u)
+
+    const wixInstallIndex = jobBlock.indexOf('choco install wixtoolset')
+    const msiBuildIndex = jobBlock.indexOf('pnpm tauri build --bundles msi')
+
+    expect(wixInstallIndex).toBeGreaterThanOrEqual(0)
+    expect(msiBuildIndex).toBeGreaterThan(wixInstallIndex)
   })
 })
 

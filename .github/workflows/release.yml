@@ -117,11 +117,27 @@ jobs:
       - name: Build Windows MSI
         run: pnpm tauri build --bundles msi
 
+      - name: Package Windows portable ZIP
+        shell: pwsh
+        run: |
+          $exePath = "src-tauri/target/release/bizclaw.exe"
+          if (-not (Test-Path $exePath)) {
+            throw "Portable executable not found: $exePath"
+          }
+
+          $portableDir = "src-tauri/target/release/bundle/portable"
+          New-Item -ItemType Directory -Path $portableDir -Force | Out-Null
+
+          $zipPath = Join-Path $portableDir "BizClaw-windows-portable-${env:GITHUB_REF_NAME}.zip"
+          Compress-Archive -Path $exePath -DestinationPath $zipPath -Force
+
       - name: Upload Windows release assets
         uses: actions/upload-artifact@v6
         with:
           name: bizclaw-windows
-          path: src-tauri/target/release/bundle/msi/*.msi
+          path: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/portable/*.zip
           if-no-files-found: error
 
   publish-release:

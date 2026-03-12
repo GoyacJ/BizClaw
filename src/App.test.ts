@@ -49,7 +49,7 @@ vi.mock('@/lib/use-app-model', () => {
         sshHost: '127.0.0.1',
         sshUser: 'root',
         localPort: '18889',
-        remoteBindHost: '127.0.0.1',
+        remoteBindHost: '',
         remoteBindPort: '18789',
       }),
       connectDisabledReason: ref(''),
@@ -89,7 +89,7 @@ vi.mock('@/lib/use-app-model', () => {
       tokenStateLabel: ref('已保存'),
       tokenStateToneValue: ref('success'),
       userProfile: reactive({
-        displayName: 'Goya Mac',
+        displayName: '',
         autoConnect: true,
         runInBackground: true,
       }),
@@ -175,5 +175,19 @@ describe('App environment status bar', () => {
 
     expect(fields).toContain('SSH Password')
     expect(host.querySelectorAll('input[placeholder="如已保存，可留空保持原值"]')).toHaveLength(2)
+  })
+
+  it('shows the updated default placeholders for display name and remote bind host', async () => {
+    const { default: App } = await import('./App.vue')
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+
+    app = createApp(App)
+    app.mount(host)
+    await nextTick()
+
+    expect(host.querySelector('input[placeholder="名称"]')).not.toBeNull()
+    expect(host.querySelector('input[placeholder="127.0.0.1"]')).not.toBeNull()
   })
 })

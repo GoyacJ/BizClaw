@@ -267,7 +267,7 @@ const saveHint = computed(() => {
         <div class="form-grid">
           <label class="field">
             <span>显示名称</span>
-            <input v-model="userProfile.displayName" placeholder="例如 Goya Mac" />
+            <input v-model="userProfile.displayName" placeholder="名称" />
           </label>
 
           <label class="field">
@@ -327,7 +327,7 @@ const saveHint = computed(() => {
 
           <label class="field">
             <span>Remote Bind Host</span>
-            <input v-model="companyProfile.remoteBindHost" placeholder="61.150.94.14" />
+            <input v-model="companyProfile.remoteBindHost" placeholder="127.0.0.1" />
           </label>
 
           <label class="field">

@@ -74,6 +74,16 @@ describe('release workflow', () => {
     expect(wixInstallIndex).toBeGreaterThanOrEqual(0)
     expect(msiBuildIndex).toBeGreaterThan(wixInstallIndex)
   })
+
+  it('packages a portable Windows zip alongside the MSI', () => {
+    const jobBlock = readJobBlock('build-windows')
+
+    expect(jobBlock).toMatch(/src-tauri\/target\/release\/bizclaw\.exe/u)
+    expect(jobBlock).toMatch(/Compress-Archive/u)
+    expect(jobBlock).toMatch(/bundle\/portable/u)
+    expect(jobBlock).toMatch(/\.zip/u)
+    expect(jobBlock).toMatch(/bundle\/msi\/\*\.msi[\s\S]*bundle\/portable\/\*\.zip/u)
+  })
 })
 
 function readJobBlock(jobName: string) {

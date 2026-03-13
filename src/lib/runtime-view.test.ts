@@ -1,93 +1,125 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  buildInstallSummary,
-  buildWorkflow,
-  phaseLabel,
-  shouldShowInstallConsole,
+  buildOperationsSummary,
+  operationTaskPhaseLabel,
+  operationStepLabel,
+  runtimeTargetLabel,
   startRuntimeDisabledReason,
   tokenStatusLabel,
 } from './runtime-view'
-import type { EnvironmentSnapshot, InstallResult } from '@/types'
+import type { EnvironmentSnapshot, OperationResult, OperationTaskSnapshot } from '@/types'
 
 describe('runtime view helpers', () => {
-  it('builds a 3-step workflow with install, config and runtime', () => {
-    const snapshot = createSnapshot({
-      openclawInstalled: false,
-      runtimeStatus: {
-        phase: 'installNeeded',
-        sshConnected: false,
-        nodeConnected: false,
-        lastError: null,
-      },
-    })
-
-    const workflow = buildWorkflow(snapshot)
-
-    expect(workflow.map((step) => step.key)).toEqual(['install', 'configure', 'runtime'])
-    expect(workflow[0]?.state).toBe('active')
-    expect(workflow[1]?.state).toBe('idle')
+  it('renders the runtime target and operation step labels', () => {
+    expect(runtimeTargetLabel('macNative')).toBe('macOS 本机')
+    expect(runtimeTargetLabel('windowsWsl')).toBe('Windows WSL')
+    expect(operationStepLabel('bootstrapWsl')).toBe('WSL 初始化')
+    expect(operationTaskPhaseLabel('cancelling')).toBe('停止中')
   })
 
-  it('marks configuration complete only when profile and token are both saved', () => {
-    const snapshot = createSnapshot({
-      hasSavedProfile: true,
-      tokenStatus: 'saved',
+  it('marks operations summary as update-ready when a newer version exists', () => {
+    const summary = buildOperationsSummary(createSnapshot({
       openclawInstalled: true,
-    })
+      openclawVersion: 'OpenClaw 2026.3.8',
+      latestOpenclawVersion: '2026.3.9',
+      updateAvailable: true,
+    }), null, null)
 
-    const workflow = buildWorkflow(snapshot)
-
-    expect(workflow[1]?.state).toBe('complete')
-    expect(workflow[1]?.caption).toContain('已保存')
+    expect(summary.title).toBe('检测到可用更新')
+    expect(summary.detail).toContain('2026.3.9')
+    expect(summary.tone).toBe('active')
   })
 
-  it('hides skipped install results when openclaw is already present', () => {
-    const installResult: InstallResult = {
-      strategy: 'skipped',
-      success: true,
+  it('prefers follow-up messaging when an operation failed', () => {
+    const result: OperationResult = {
+      kind: 'install',
+      strategy: 'official',
+      success: false,
+      step: 'installOpenClaw',
       stdout: '',
       stderr: '',
       needsElevation: false,
       manualUrl: 'https://docs.openclaw.ai/install',
-      followUp: '已检测到 openclaw，跳过安装。',
+      followUp: '请完成 WSL / Ubuntu 初始化后重试。',
     }
 
-    expect(shouldShowInstallConsole(installResult)).toBe(false)
+    const task: OperationTaskSnapshot = {
+      phase: 'error',
+      kind: 'install',
+      step: 'installOpenClaw',
+      canStop: false,
+      lastResult: result,
+      startedAt: 1,
+      endedAt: 2,
+    }
+
+    const summary = buildOperationsSummary(createSnapshot(), task, null)
+    expect(summary.title).toBe('操作未完成')
+    expect(summary.detail).toContain('WSL')
+    expect(summary.tone).toBe('error')
   })
 
-  it('uses token status labels and start disabled reasons', () => {
-    const missingToken = createSnapshot({
-      openclawInstalled: true,
-      hasSavedProfile: true,
-      tokenStatus: 'missing',
-    })
+  it('describes a running install task as a background action', () => {
+    const task: OperationTaskSnapshot = {
+      phase: 'running',
+      kind: 'install',
+      step: 'installOpenClaw',
+      canStop: true,
+      lastResult: null,
+      startedAt: 1,
+      endedAt: null,
+    }
 
-    expect(tokenStatusLabel(missingToken)).toBe('Token 未保存')
-    expect(startRuntimeDisabledReason(missingToken, null)).toBe('请先保存 Gateway Token。')
-
-    const tokenError = createSnapshot({
-      openclawInstalled: true,
-      hasSavedProfile: true,
-      tokenStatus: 'error',
-      tokenStatusMessage: 'token file unavailable',
-    })
-
-    expect(tokenStatusLabel(tokenError)).toBe('Token 存储异常')
-    expect(startRuntimeDisabledReason(tokenError, null)).toBe('token file unavailable')
+    const summary = buildOperationsSummary(createSnapshot(), task, null)
+    expect(summary.title).toBe('正在安装 OpenClaw')
+    expect(summary.detail).toContain('后台')
+    expect(summary.tone).toBe('active')
   })
 
-  it('returns install summary from detected openclaw version', () => {
+  it('describes a cancelled task as stopped instead of failed', () => {
+    const task: OperationTaskSnapshot = {
+      phase: 'cancelled',
+      kind: 'install',
+      step: 'installOpenClaw',
+      canStop: false,
+      lastResult: {
+        kind: 'install',
+        strategy: 'official',
+        success: false,
+        step: 'installOpenClaw',
+        stdout: '',
+        stderr: '',
+        needsElevation: false,
+        manualUrl: 'https://docs.openclaw.ai/install',
+        followUp: '安装已停止。',
+      },
+      startedAt: 1,
+      endedAt: 2,
+    }
+
+    const summary = buildOperationsSummary(createSnapshot(), task, null)
+    expect(summary.title).toBe('任务已停止')
+    expect(summary.detail).toContain('已停止')
+    expect(summary.tone).toBe('active')
+  })
+
+  it('blocks runtime start when windows wsl is not ready', () => {
     const snapshot = createSnapshot({
-      openclawInstalled: true,
-      openclawVersion: 'OpenClaw 2026.3.8',
+      runtimeTarget: 'windowsWsl',
+      wslStatus: {
+        available: true,
+        distroName: 'Ubuntu',
+        distroInstalled: false,
+        ready: false,
+        needsReboot: false,
+        message: '尚未检测到 Ubuntu',
+      },
+      targetSshInstalled: false,
     })
 
-    const summary = buildInstallSummary(snapshot, null, null)
-
-    expect(summary.title).toBe('OpenClaw 已安装')
-    expect(summary.detail).toBe('OpenClaw 2026.3.8')
-    expect(phaseLabel('running')).toBe('运行中')
+    expect(tokenStatusLabel(snapshot)).toBe('Token 未保存')
+    expect(startRuntimeDisabledReason(snapshot, false)).toBe('请先完成 WSL / Ubuntu 初始化。')
   })
 })
 
@@ -96,11 +128,13 @@ function createSnapshot(
 ): EnvironmentSnapshot {
   return {
     os: 'macos',
-    sshInstalled: true,
-    openclawInstalled: true,
+    runtimeTarget: 'macNative',
+    hostSshInstalled: true,
+    targetSshInstalled: true,
+    openclawInstalled: false,
     openclawVersion: null,
-    npmInstalled: true,
-    pnpmInstalled: true,
+    latestOpenclawVersion: null,
+    updateAvailable: false,
     hasSavedProfile: false,
     tokenStatus: 'missing',
     tokenStatusMessage: null,
@@ -109,9 +143,11 @@ function createSnapshot(
       phase: 'checking',
       sshConnected: false,
       nodeConnected: false,
+      gatewayConnected: false,
       lastError: null,
     },
     installRecommendation: 'test',
+    wslStatus: null,
     ...overrides,
   }
 }

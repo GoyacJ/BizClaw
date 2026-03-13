@@ -8,13 +8,13 @@ import {
 } from './profile-form'
 
 describe('company profile draft helpers', () => {
-  it('starts with a blank company profile draft', () => {
+  it('starts with loopback-friendly default ports and host', () => {
     expect(createEmptyCompanyProfileDraft()).toEqual({
       sshHost: '',
       sshUser: '',
-      localPort: '',
-      remoteBindHost: '',
-      remoteBindPort: '',
+      localPort: '18889',
+      remoteBindHost: '127.0.0.1',
+      remoteBindPort: '18789',
     })
   })
 

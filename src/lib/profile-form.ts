@@ -4,9 +4,9 @@ export function createEmptyCompanyProfileDraft(): CompanyProfileDraft {
   return {
     sshHost: '',
     sshUser: '',
-    localPort: '',
-    remoteBindHost: '',
-    remoteBindPort: '',
+    localPort: '18889',
+    remoteBindHost: '127.0.0.1',
+    remoteBindPort: '18789',
   }
 }
 

@@ -119,7 +119,10 @@ mod tests {
         let store = LocalSecretStore::new(temp.path().join("gateway-token.txt"));
 
         store.set_secret("gateway-token").unwrap();
-        assert_eq!(store.get_secret().unwrap().as_deref(), Some("gateway-token"));
+        assert_eq!(
+            store.get_secret().unwrap().as_deref(),
+            Some("gateway-token")
+        );
 
         store.clear_secret().unwrap();
         assert_eq!(store.get_secret().unwrap(), None);

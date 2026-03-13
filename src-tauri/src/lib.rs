@@ -1,15 +1,13 @@
-use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager,
-};
+use tauri::{tray::TrayIconBuilder, Manager};
 
+pub mod app_menu;
 pub mod commands;
 pub mod config_store;
 pub mod install;
+pub mod operation_supervisor;
 pub mod runtime;
-pub mod runtime_supervisor;
 pub mod runtime_state;
+pub mod runtime_supervisor;
 pub mod secret_store;
 pub mod types;
 pub mod validation;
@@ -30,35 +28,18 @@ pub fn run() {
                 let _ = window.show();
             }
 
-            let show = MenuItemBuilder::with_id("show", "打开控制台").build(app)?;
-            let quit = MenuItemBuilder::with_id("quit", "退出").build(app)?;
-            let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
+            let app_menu = app_menu::build_app_menu(app.app_handle())?;
+            app_menu.set_as_app_menu()?;
+            let tray_menu_state = app_menu::build_tray_menu(app.app_handle())?;
+            let tray_menu = tray_menu_state.tray_menu.clone();
+            app.manage(tray_menu_state);
+            app_menu::refresh_status_menu_from_state(app.app_handle())?;
             let default_icon = app.default_window_icon().cloned();
 
             let mut tray_builder = TrayIconBuilder::new()
-                .menu(&menu)
-                .on_menu_event(|app, event| match event.id().as_ref() {
-                    "show" => show_window(app),
-                    "quit" => {
-                        let state = app.state::<commands::AppState>();
-                        let _ = runtime_supervisor::stop_runtime_processes(
-                            state.runtime.clone(),
-                            app.clone(),
-                        );
-                        app.exit(0);
-                    }
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        show_window(tray.app_handle());
-                    }
-                });
+                .menu(&tray_menu)
+                .show_menu_on_left_click(true)
+                .on_menu_event(|app, event| handle_app_menu_event(app, event.id().as_ref()));
 
             if let Some(icon) = default_icon {
                 tray_builder = tray_builder.icon(icon);
@@ -70,8 +51,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::detect_environment,
             commands::install_openclaw,
+            commands::check_openclaw_update,
+            commands::update_openclaw,
+            commands::get_operation_status,
+            commands::get_operation_events,
+            commands::stop_openclaw_operation,
             commands::open_manual_install,
             commands::save_profile,
+            commands::test_connection,
             commands::start_runtime,
             commands::stop_runtime,
             commands::get_runtime_status,
@@ -79,6 +66,20 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn handle_app_menu_event(app: &tauri::AppHandle, event_id: &str) {
+    match event_id {
+        app_menu::MENU_SHOW_ID => show_window(app),
+        app_menu::MENU_REFRESH_ID => app_menu::emit_refresh_request(app),
+        app_menu::MENU_QUIT_ID => {
+            let state = app.state::<commands::AppState>();
+            let _ = runtime_supervisor::stop_runtime_processes(state.runtime.clone(), app.clone());
+            let _ = commands::stop_operation_for_exit(app);
+            app.exit(0);
+        }
+        _ => {}
+    }
 }
 
 fn show_window(app: &tauri::AppHandle) {

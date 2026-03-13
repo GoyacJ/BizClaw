@@ -1,67 +1,124 @@
 import { createApp, nextTick, reactive, ref } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { EnvironmentSnapshot } from '@/types'
+import type { EnvironmentSnapshot, OperationTaskSnapshot } from '@/types'
 
 vi.mock('@/lib/runtime-view', () => ({
-  phaseLabel: (phase: string) => {
-    if (phase === 'running') {
-      return '运行中'
-    }
-
-    if (phase === 'connecting') {
-      return '连接中'
-    }
-
-    return phase
-  },
+  operationStepLabel: (step: string) => step,
+  phaseLabel: (phase: string) => phase,
 }))
 
 vi.mock('@/lib/use-app-model', () => {
   const environment = ref<EnvironmentSnapshot | null>({
-    os: 'macOS',
-    sshInstalled: true,
+    os: 'windows',
+    runtimeTarget: 'windowsWsl',
+    hostSshInstalled: false,
+    targetSshInstalled: true,
     openclawInstalled: true,
     openclawVersion: 'OpenClaw 2026.3.8',
-    npmInstalled: true,
-    pnpmInstalled: true,
+    latestOpenclawVersion: '2026.3.9',
+    updateAvailable: true,
     hasSavedProfile: true,
     tokenStatus: 'saved',
     tokenStatusMessage: null,
-    savedSettings: null,
+    savedSettings: {
+      companyProfile: {
+        sshHost: 'gateway.example.com',
+        sshUser: 'bizclaw',
+        localPort: 18889,
+        remoteBindHost: '127.0.0.1',
+        remoteBindPort: 18789,
+      },
+      userProfile: {
+        displayName: 'BizClaw',
+        autoConnect: true,
+        runInBackground: true,
+      },
+      targetProfile: {
+        wslDistro: 'Ubuntu',
+      },
+    },
     runtimeStatus: {
-      phase: 'running',
-      sshConnected: true,
-      nodeConnected: true,
+      phase: 'configured',
+      sshConnected: false,
+      nodeConnected: false,
+      gatewayConnected: false,
       lastError: null,
     },
-    installRecommendation: '已完成',
+    installRecommendation: 'Windows 通过 WSL 运行',
+    wslStatus: {
+      available: true,
+      distroName: 'Ubuntu',
+      distroInstalled: true,
+      ready: true,
+      needsReboot: false,
+      message: null,
+    },
+  })
+  const operationTask = ref<OperationTaskSnapshot>({
+    phase: 'running',
+    kind: 'install',
+    step: 'installOpenClaw',
+    canStop: true,
+    lastResult: null,
+    startedAt: Date.now(),
+    endedAt: null,
+  })
+  const connectionTestModal = ref({
+    open: false,
+    phase: 'idle',
+    summary: '',
+    result: null,
+    steps: [
+      {
+        step: 'save',
+        label: '配置已保存',
+        status: 'success',
+        message: '配置已保存',
+      },
+      {
+        step: 'sshTunnel',
+        label: 'SSH 隧道',
+        status: 'pending',
+        message: '',
+      },
+      {
+        step: 'gatewayProbe',
+        label: 'Gateway 鉴权',
+        status: 'pending',
+        message: '',
+      },
+    ],
   })
 
   return {
     useAppModel: () => ({
+      activeSection: ref<'overview' | 'install' | 'connection' | 'runtime'>('overview'),
       advancedOpen: ref(true),
       busyAction: ref<string | null>(null),
-      canSaveAndConnect: ref(true),
       canSaveProfile: ref(true),
       canStartHostedRuntime: ref(true),
+      canTestConnection: ref(true),
+      checkForUpdates: vi.fn(),
+      closeConnectionTestModal: vi.fn(),
+      connectionTestBusy: ref(false),
+      connectionTestDisabledReason: ref<string | null>(null),
+      connectionTestCloseDisabled: ref(false),
+      connectionTestModal,
       companyProfile: reactive({
-        sshHost: '127.0.0.1',
-        sshUser: 'root',
+        sshHost: 'gateway.example.com',
+        sshUser: 'bizclaw',
         localPort: '18889',
-        remoteBindHost: '',
+        remoteBindHost: '127.0.0.1',
         remoteBindPort: '18789',
       }),
       connectDisabledReason: ref(''),
+      canStopOperation: ref(true),
       environment,
       installCli: vi.fn(),
-      installResult: ref(null),
-      installSummary: ref({
-        tone: 'success',
-        title: '已安装',
-        detail: 'OpenClaw CLI 已就绪',
-      }),
+      installBusyAction: ref<string | null>(null),
       launchManualInstall: vi.fn(),
+      manualInstallBusy: ref(false),
       logs: ref([
         {
           source: 'system',
@@ -70,54 +127,82 @@ vi.mock('@/lib/use-app-model', () => {
           timestampMs: Date.now(),
         },
       ]),
+      operationError: ref<string | null>(null),
+      operationEvents: ref([
+        {
+          kind: 'install',
+          step: 'installOpenClaw',
+          status: 'log',
+          source: 'stdout',
+          message: 'installing...',
+          timestampMs: Date.now(),
+        },
+      ]),
+      operationHeadline: ref('installing...'),
+      operationResult: ref(null),
+      operationTask,
+      operationTaskPhaseLabel: (phase: string) => phase,
+      openclawStateLabel: ref('OpenClaw 2026.3.8'),
+      openclawStateTone: ref('success'),
+      operationsSummary: ref({
+        title: '正在安装 OpenClaw',
+        detail: 'BizClaw 正在后台执行官方安装器。',
+        tone: 'active',
+      }),
+      overviewCards: ref([
+        {
+          label: '目标运行时',
+          value: 'Windows WSL',
+          detail: 'Ubuntu 已就绪',
+          tone: 'success',
+        },
+      ]),
+      platformLabel: ref('Windows WSL'),
       profileError: ref<string | null>(null),
       refreshEnvironment: vi.fn(),
       runtimeError: ref<string | null>(null),
+      runtimeStartBusy: ref(false),
       runtimeStatus: ref({
-        phase: 'running',
-        sshConnected: true,
-        nodeConnected: true,
+        phase: 'configured',
+        sshConnected: false,
+        nodeConnected: false,
+        gatewayConnected: false,
         lastError: null,
       }),
-      saveAndConnect: vi.fn(),
+      runtimeStopBusy: ref(false),
+      saveAndTest: vi.fn(),
+      saveBusy: ref(false),
       saveOnly: vi.fn(),
-      showInstallConsole: ref(false),
       sshPasswordInput: ref(''),
+      sshStateLabel: ref('已就绪'),
       startHostedRuntime: vi.fn(),
+      statusItems: ref([
+        { label: 'Token', value: 'Token 已保存', tone: 'success' },
+        { label: 'OpenClaw', value: 'OpenClaw 2026.3.8', tone: 'success' },
+        { label: 'SSH', value: '已就绪', tone: 'success' },
+        { label: 'Gateway', value: '未连接', tone: 'neutral' },
+      ]),
       stopHostedRuntime: vi.fn(),
+      stopOperation: vi.fn(),
+      targetProfile: reactive({
+        wslDistro: 'Ubuntu',
+      }),
       tokenInput: ref('saved-token'),
-      tokenStateLabel: ref('已保存'),
+      gatewayStateLabel: ref('未连接'),
+      gatewayStateTone: ref('neutral'),
+      tokenStateLabel: ref('Token 已保存'),
       tokenStateToneValue: ref('success'),
+      updateCli: vi.fn(),
       userProfile: reactive({
-        displayName: '',
+        displayName: 'BizClaw',
         autoConnect: true,
         runInBackground: true,
       }),
-      workflow: ref([
-        {
-          key: 'install',
-          state: 'complete',
-          title: '安装 OpenClaw',
-          caption: 'CLI 已就绪',
-        },
-        {
-          key: 'config',
-          state: 'complete',
-          title: '保存连接配置',
-          caption: '配置已保存',
-        },
-        {
-          key: 'runtime',
-          state: 'active',
-          title: '托管运行时',
-          caption: '正在运行',
-        },
-      ]),
     }),
   }
 })
 
-describe('App environment status bar', () => {
+describe('App operations center', () => {
   let host: HTMLDivElement | null = null
   let app: ReturnType<typeof createApp> | null = null
 
@@ -128,7 +213,7 @@ describe('App environment status bar', () => {
     app = null
   })
 
-  it('renders the environment area as a compact status bar', async () => {
+  it('renders the compact sidebar navigation shell', async () => {
     const { default: App } = await import('./App.vue')
 
     host = document.createElement('div')
@@ -138,28 +223,19 @@ describe('App environment status bar', () => {
     app.mount(host)
     await nextTick()
 
-    const footer = host.querySelector('footer.environment-bar')
-    expect(footer).not.toBeNull()
-    expect(footer?.classList.contains('surface-card')).toBe(false)
-    expect(footer?.getAttribute('role')).toBe('status')
-    expect(footer?.getAttribute('aria-label')).toBe('当前环境状态')
-
-    const list = footer?.querySelector('.environment-bar__list')
-    expect(list?.tagName).toBe('UL')
-    expect(list?.querySelectorAll('.environment-pill')).toHaveLength(5)
-    expect(list?.textContent).toContain('托管')
-    expect(list?.textContent).toContain('运行中')
-
-    const details = Array.from(
-      list?.querySelectorAll<HTMLElement>('.environment-pill__detail') ?? [],
+    expect(host.querySelector('main.ops-shell')).not.toBeNull()
+    const navButtons = Array.from(host.querySelectorAll('.sidebar-nav .nav-button')).map((node) =>
+      node.textContent?.trim(),
     )
-    expect(details).toHaveLength(5)
-    for (const detail of details) {
-      expect(detail.getAttribute('title')).toBe(detail.textContent)
-    }
+
+    expect(navButtons).toEqual(['概览', '安装与更新', '连接与配置', '运行日志'])
+    expect(host.textContent).toContain('BIZCLAW')
+    expect(host.textContent).not.toContain('操作中心')
+    expect(host.textContent).not.toContain('macOS 本机')
+    expect(host.querySelector('.sidebar-summary')).toBeNull()
   })
 
-  it('shows an SSH password field in advanced settings', async () => {
+  it('shows WSL distro and SSH password in advanced connection settings', async () => {
     const { default: App } = await import('./App.vue')
 
     host = document.createElement('div')
@@ -169,15 +245,19 @@ describe('App environment status bar', () => {
     app.mount(host)
     await nextTick()
 
-    const fields = Array.from(
-      host.querySelectorAll<HTMLElement>('.advanced-grid .field span'),
-    ).map((node) => node.textContent?.trim())
+    const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+      .find((node) => node.textContent?.includes('连接与配置'))
+    button?.click()
+    await nextTick()
 
-    expect(fields).toContain('SSH Password')
-    expect(host.querySelectorAll('input[placeholder="如已保存，可留空保持原值"]')).toHaveLength(2)
+    const labels = Array.from(host.querySelectorAll('.advanced-grid .field span'))
+      .map((node) => node.textContent?.trim())
+
+    expect(labels).toContain('WSL Distro')
+    expect(labels).toContain('SSH Password')
   })
 
-  it('shows the updated default placeholders for display name and remote bind host', async () => {
+  it('renders save and test plus hosted runtime controls on the connection page', async () => {
     const { default: App } = await import('./App.vue')
 
     host = document.createElement('div')
@@ -187,7 +267,75 @@ describe('App environment status bar', () => {
     app.mount(host)
     await nextTick()
 
-    expect(host.querySelector('input[placeholder="名称"]')).not.toBeNull()
-    expect(host.querySelector('input[placeholder="127.0.0.1"]')).not.toBeNull()
+    const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+      .find((node) => node.textContent?.includes('连接与配置'))
+    button?.click()
+    await nextTick()
+
+    expect(host.textContent).toContain('托管运行时')
+    expect(host.textContent).toContain('保存并测试')
+    expect(host.textContent).toContain('启动托管')
+    expect(host.textContent).toContain('停止托管')
+  })
+
+  it('renders the live install console and stop control on the install page', async () => {
+    const { default: App } = await import('./App.vue')
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+
+    app = createApp(App)
+    app.mount(host)
+    await nextTick()
+
+    const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+      .find((node) => node.textContent?.includes('安装与更新'))
+    button?.click()
+    await nextTick()
+
+    expect(host.textContent).toContain('安装 / 更新输出')
+    expect(host.textContent).toContain('installing...')
+    expect(host.textContent).toContain('停止')
+  })
+
+  it('shows the global status bar instead of a sidebar summary', async () => {
+    const { default: App } = await import('./App.vue')
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+
+    app = createApp(App)
+    app.mount(host)
+    await nextTick()
+
+    const statusBar = host.querySelector('.status-bar')
+
+    expect(statusBar).not.toBeNull()
+    expect(statusBar?.textContent).toContain('Token')
+    expect(statusBar?.textContent).toContain('OpenClaw')
+    expect(statusBar?.textContent).toContain('SSH')
+    expect(statusBar?.textContent).toContain('Gateway')
+    expect(statusBar?.textContent).toContain('未连接')
+  })
+
+  it('keeps the runtime page focused on logs only while install work can continue in background', async () => {
+    const { default: App } = await import('./App.vue')
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+
+    app = createApp(App)
+    app.mount(host)
+    await nextTick()
+
+    const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+      .find((node) => node.textContent?.includes('运行日志'))
+    button?.click()
+    await nextTick()
+
+    expect(host.textContent).toContain('最近日志')
+    expect(host.textContent).not.toContain('启动托管')
+    expect(host.textContent).not.toContain('停止托管')
+    expect(host.textContent).toContain('ready')
   })
 })

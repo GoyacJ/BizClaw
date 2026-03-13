@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 
-use crate::types::{CompanyProfile, PersistedSettings, UserProfile};
+use crate::types::{CompanyProfile, PersistedSettings, TargetProfile, UserProfile};
 
 pub fn validate_company_profile(profile: &CompanyProfile) -> Result<()> {
     if profile.ssh_host.trim().is_empty() {
@@ -30,15 +30,27 @@ pub fn validate_user_profile(profile: &UserProfile) -> Result<()> {
     Ok(())
 }
 
+pub fn validate_target_profile(profile: &TargetProfile) -> Result<()> {
+    if profile.wsl_distro.trim().is_empty() {
+        return Err(anyhow!("WSL 发行版不能为空"));
+    }
+
+    Ok(())
+}
+
 pub fn saved_settings_are_complete(settings: &PersistedSettings) -> bool {
     validate_company_profile(&settings.company_profile).is_ok()
         && validate_user_profile(&settings.user_profile).is_ok()
+        && validate_target_profile(&settings.target_profile).is_ok()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{saved_settings_are_complete, validate_company_profile, validate_user_profile};
-    use crate::types::{CompanyProfile, PersistedSettings, UserProfile};
+    use super::{
+        saved_settings_are_complete, validate_company_profile, validate_target_profile,
+        validate_user_profile,
+    };
+    use crate::types::{CompanyProfile, PersistedSettings, TargetProfile, UserProfile};
 
     #[test]
     fn accepts_valid_company_profile() {
@@ -80,6 +92,16 @@ mod tests {
     }
 
     #[test]
+    fn rejects_blank_wsl_distro() {
+        let error = validate_target_profile(&TargetProfile {
+            wsl_distro: " ".into(),
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("WSL"));
+    }
+
+    #[test]
     fn complete_saved_settings_are_usable() {
         let settings = PersistedSettings {
             company_profile: CompanyProfile {
@@ -94,6 +116,7 @@ mod tests {
                 auto_connect: true,
                 run_in_background: true,
             },
+            target_profile: TargetProfile::default(),
         };
 
         assert!(saved_settings_are_complete(&settings));
@@ -114,6 +137,7 @@ mod tests {
                 auto_connect: true,
                 run_in_background: true,
             },
+            target_profile: TargetProfile::default(),
         };
 
         assert!(!saved_settings_are_complete(&settings));

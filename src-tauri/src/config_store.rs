@@ -45,7 +45,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::JsonSettingsStore;
-    use crate::types::{CompanyProfile, PersistedSettings, UserProfile};
+    use crate::types::{CompanyProfile, PersistedSettings, TargetProfile, UserProfile};
 
     #[test]
     fn saves_and_loads_settings_round_trip() {
@@ -64,6 +64,7 @@ mod tests {
                 auto_connect: true,
                 run_in_background: true,
             },
+            target_profile: TargetProfile::default(),
         };
 
         store.save(&settings).unwrap();
@@ -98,6 +99,7 @@ mod tests {
                 auto_connect: false,
                 run_in_background: true,
             },
+            target_profile: TargetProfile::default(),
         };
 
         store.save(&settings).unwrap();

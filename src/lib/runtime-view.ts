@@ -1,21 +1,18 @@
 import type {
   EnvironmentSnapshot,
-  InstallResult,
+  OperationEvent,
+  OperationTaskPhase,
+  OperationTaskSnapshot,
+  OperationStep,
   RuntimePhase,
   RuntimeStatus,
+  RuntimeTarget,
 } from '@/types'
 
-export interface StepView {
-  key: string
-  title: string
-  caption: string
-  state: 'idle' | 'active' | 'complete' | 'error'
-}
-
-export interface InstallSummary {
+export interface OperationsSummary {
   title: string
   detail: string
-  tone: StepView['state']
+  tone: 'idle' | 'active' | 'complete' | 'error'
 }
 
 export function phaseLabel(phase: RuntimePhase): string {
@@ -39,64 +36,8 @@ export function phaseLabel(phase: RuntimePhase): string {
   }
 }
 
-export function buildWorkflow(snapshot: EnvironmentSnapshot | null): StepView[] {
-  const status = snapshot?.runtimeStatus ?? defaultStatus()
-  const installReady = Boolean(snapshot?.openclawInstalled)
-  const configReady = hasSavedConnection(snapshot)
-
-  return [
-    {
-      key: 'install',
-      title: '安装 OpenClaw',
-      caption: installReady
-        ? snapshot?.openclawVersion ?? 'CLI 已可用'
-        : '检测并安装 OpenClaw CLI',
-      state: status.phase === 'error' && !installReady
-        ? 'error'
-        : installReady
-          ? 'complete'
-          : status.phase === 'checking'
-            || status.phase === 'installNeeded'
-            || status.phase === 'installing'
-            || status.phase === 'manualWait'
-            ? 'active'
-            : 'idle',
-    },
-    {
-      key: 'configure',
-      title: '保存连接配置',
-      caption: configReady
-        ? '显示名、SSH 与 Token 已保存'
-        : snapshot?.tokenStatus === 'error'
-          ? 'Token 存储异常，需要重新保存'
-          : '填写显示名、SSH 参数和 Gateway Token',
-      state: snapshot?.tokenStatus === 'error'
-        ? 'error'
-        : configReady
-          ? 'complete'
-          : installReady
-            ? 'active'
-            : 'idle',
-    },
-    {
-      key: 'runtime',
-      title: '启动托管',
-      caption: status.phase === 'running'
-        ? 'SSH 隧道与 OpenClaw Node 正在运行'
-        : status.phase === 'connecting'
-          ? '正在建立托管连接'
-          : '使用已保存配置启动或停止托管',
-      state: status.phase === 'error'
-        ? 'error'
-        : status.phase === 'running'
-          ? 'complete'
-          : status.phase === 'connecting'
-            ? 'active'
-            : configReady
-              ? 'idle'
-              : 'idle',
-    },
-  ]
+export function runtimeTargetLabel(target: RuntimeTarget): string {
+  return target === 'windowsWsl' ? 'Windows WSL' : 'macOS 本机'
 }
 
 export function tokenStatusLabel(snapshot: EnvironmentSnapshot | null): string {
@@ -123,65 +64,143 @@ export function tokenStatusTone(
   }
 }
 
-export function buildInstallSummary(
+export function operationStepLabel(step: OperationStep): string {
+  switch (step) {
+    case 'detect':
+      return '环境检测'
+    case 'bootstrapWsl':
+      return 'WSL 初始化'
+    case 'ensureSsh':
+      return 'OpenSSH 检查'
+    case 'installOpenClaw':
+      return '安装 OpenClaw'
+    case 'checkUpdate':
+      return '检查更新'
+    case 'updateOpenClaw':
+      return '更新 OpenClaw'
+  }
+}
+
+export function operationTaskPhaseLabel(phase: OperationTaskPhase): string {
+  switch (phase) {
+    case 'idle':
+      return '待命'
+    case 'running':
+      return '执行中'
+    case 'cancelling':
+      return '停止中'
+    case 'success':
+      return '已完成'
+    case 'error':
+      return '失败'
+    case 'cancelled':
+      return '已停止'
+  }
+}
+
+export function buildOperationsSummary(
   snapshot: EnvironmentSnapshot | null,
-  installResult: InstallResult | null,
+  operationTask: OperationTaskSnapshot | null,
   busyAction: string | null,
-): InstallSummary {
-  if (busyAction === 'install') {
+): OperationsSummary {
+  if (operationTask?.phase === 'running' && operationTask.kind === 'install') {
     return {
       title: '正在安装 OpenClaw',
-      detail: '优先执行官方脚本，完成后会自动刷新检测结果。',
+      detail: 'BizClaw 正在后台执行官方安装器，页面可以继续操作。',
       tone: 'active',
+    }
+  }
+
+  if (operationTask?.phase === 'running' && operationTask.kind === 'update') {
+    return {
+      title: '正在更新 OpenClaw',
+      detail: '当前正在后台执行官方更新流程，完成后会重新检测版本信息。',
+      tone: 'active',
+    }
+  }
+
+  if (operationTask?.phase === 'cancelling') {
+    return {
+      title: '正在停止任务',
+      detail: 'BizClaw 正在结束安装或更新进程，请稍候。',
+      tone: 'active',
+    }
+  }
+
+  if (operationTask?.phase === 'cancelled') {
+    return {
+      title: '任务已停止',
+      detail: operationTask.lastResult?.followUp ?? '当前安装或更新任务已停止。',
+      tone: 'active',
+    }
+  }
+
+  if (busyAction === 'check-update') {
+    return {
+      title: '正在检查更新',
+      detail: '正在获取当前版本与远端最新版本。',
+      tone: 'active',
+    }
+  }
+
+  if (operationTask?.phase === 'error' && operationTask.lastResult && !operationTask.lastResult.success) {
+    return {
+      title: '操作未完成',
+      detail: operationTask.lastResult.followUp,
+      tone: 'error',
+    }
+  }
+
+  if (operationTask?.phase === 'success' && operationTask.lastResult?.success) {
+    return {
+      title: operationTask.kind === 'update' ? '更新已完成' : '安装已完成',
+      detail: operationTask.lastResult.followUp,
+      tone: 'complete',
     }
   }
 
   if (snapshot?.openclawInstalled) {
     return {
-      title: 'OpenClaw 已安装',
-      detail: snapshot.openclawVersion ?? '已检测到 OpenClaw CLI，可直接进入连接配置。',
-      tone: 'complete',
-    }
-  }
-
-  if (installResult && !installResult.success) {
-    return {
-      title: '安装未完成',
-      detail: installResult.followUp,
-      tone: 'error',
-    }
-  }
-
-  if (installResult && installResult.strategy !== 'skipped') {
-    return {
-      title: '安装命令已执行',
-      detail: installResult.followUp,
-      tone: 'active',
+      title: snapshot.updateAvailable ? '检测到可用更新' : 'OpenClaw 已就绪',
+      detail: snapshot.updateAvailable
+        ? `当前 ${snapshot.openclawVersion ?? '未知版本'}，可更新到 ${snapshot.latestOpenclawVersion ?? '最新版本'}`
+        : snapshot.openclawVersion ?? '已检测到 OpenClaw CLI',
+      tone: snapshot.updateAvailable ? 'active' : 'complete',
     }
   }
 
   return {
     title: '尚未安装 OpenClaw',
-    detail: '可直接自动安装，也可以打开官方文档手动完成安装。',
+    detail: snapshot?.installRecommendation ?? '请先检测环境并安装 OpenClaw。',
     tone: 'idle',
   }
 }
 
-export function shouldShowInstallConsole(
-  installResult: InstallResult | null,
-): boolean {
-  return Boolean(installResult && installResult.strategy !== 'skipped')
+export function latestOperationDetail(events: OperationEvent[]): string {
+  return events[events.length - 1]?.message ?? '尚未执行安装或更新操作。'
 }
 
 export function startRuntimeDisabledReason(
   snapshot: EnvironmentSnapshot | null,
-  busyAction: string | null,
+  hasBlockingTask: boolean,
 ): string | null {
-  if (busyAction) {
+  if (hasBlockingTask) {
     return '当前操作进行中，请稍候。'
   }
 
-  if (!snapshot?.openclawInstalled) {
+  if (!snapshot) {
+    return '正在检测当前环境。'
+  }
+
+  if (snapshot.runtimeTarget === 'windowsWsl' && !snapshot.wslStatus?.ready) {
+    return '请先完成 WSL / Ubuntu 初始化。'
+  }
+
+  if (!snapshot.targetSshInstalled) {
+    return '请先补齐目标运行环境中的 OpenSSH。'
+  }
+
+  if (!snapshot.openclawInstalled) {
     return '请先安装 OpenClaw CLI。'
   }
 
@@ -201,18 +220,25 @@ export function startRuntimeDisabledReason(
     return '托管已在运行。'
   }
 
+  if (snapshot.runtimeStatus.phase === 'connecting') {
+    return '托管正在连接中。'
+  }
+
   return null
 }
 
-export function hasSavedConnection(snapshot: EnvironmentSnapshot | null): boolean {
-  return Boolean(snapshot?.hasSavedProfile && snapshot.tokenStatus === 'saved')
-}
-
-function defaultStatus(): RuntimeStatus {
-  return {
-    phase: 'checking',
-    sshConnected: false,
-    nodeConnected: false,
-    lastError: null,
+export function runtimeDetail(status: RuntimeStatus): string {
+  if (status.lastError) {
+    return status.lastError
   }
+
+  if (status.phase === 'running') {
+    return `${status.sshConnected ? 'SSH 已连接' : 'SSH 未连接'} · ${status.nodeConnected ? 'Node 已连接' : 'Node 未连接'} · ${status.gatewayConnected ? 'Gateway 已连接' : 'Gateway 未连接'}`
+  }
+
+  if (status.phase === 'connecting') {
+    return '正在建立 SSH 隧道并启动 OpenClaw Node。'
+  }
+
+  return '可使用已保存配置启动或停止托管。'
 }

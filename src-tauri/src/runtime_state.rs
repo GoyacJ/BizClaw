@@ -14,6 +14,7 @@ impl RuntimeModel {
         self.status.phase = RuntimePhase::Configured;
         self.status.ssh_connected = false;
         self.status.node_connected = false;
+        self.status.gateway_connected = false;
         self.status.last_error = None;
     }
 
@@ -21,12 +22,15 @@ impl RuntimeModel {
         self.status.phase = RuntimePhase::Connecting;
         self.status.ssh_connected = false;
         self.status.node_connected = false;
+        self.status.gateway_connected = false;
+        self.status.last_error = None;
     }
 
     pub fn mark_running(&mut self) {
         self.status.phase = RuntimePhase::Running;
         self.status.ssh_connected = true;
         self.status.node_connected = true;
+        self.status.gateway_connected = true;
         self.status.last_error = None;
     }
 
@@ -34,6 +38,7 @@ impl RuntimeModel {
         self.status.phase = RuntimePhase::Error;
         self.status.ssh_connected = false;
         self.status.node_connected = false;
+        self.status.gateway_connected = false;
         self.status.last_error = Some(message.into());
     }
 
@@ -41,6 +46,7 @@ impl RuntimeModel {
         self.status.phase = RuntimePhase::Configured;
         self.status.ssh_connected = false;
         self.status.node_connected = false;
+        self.status.gateway_connected = false;
         self.status.last_error = None;
     }
 }
@@ -65,6 +71,7 @@ mod tests {
         assert_eq!(status.phase, RuntimePhase::Running);
         assert!(status.ssh_connected);
         assert!(status.node_connected);
+        assert!(status.gateway_connected);
     }
 
     #[test]
@@ -74,11 +81,13 @@ mod tests {
         model.mark_error("ssh tunnel failed");
         let status = model.status();
         assert_eq!(status.phase, RuntimePhase::Error);
+        assert!(!status.gateway_connected);
         assert_eq!(status.last_error.as_deref(), Some("ssh tunnel failed"));
 
         model.mark_stopped();
         let recovered = model.status();
         assert_eq!(recovered.phase, RuntimePhase::Configured);
+        assert!(!recovered.gateway_connected);
         assert_eq!(recovered.last_error, None);
     }
 }

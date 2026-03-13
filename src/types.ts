@@ -8,12 +8,18 @@ export type RuntimePhase =
   | 'running'
   | 'error'
 
+export type RuntimeTarget = 'macNative' | 'windowsWsl'
+
 export interface CompanyProfile {
   sshHost: string
   sshUser: string
   localPort: number
   remoteBindHost: string
   remoteBindPort: number
+}
+
+export interface TargetProfile {
+  wslDistro: string
 }
 
 export interface CompanyProfileDraft {
@@ -33,28 +39,33 @@ export interface UserProfile {
 export interface PersistedSettings {
   companyProfile: CompanyProfile
   userProfile: UserProfile
+  targetProfile: TargetProfile
 }
 
 export interface RuntimeStatus {
   phase: RuntimePhase
   sshConnected: boolean
   nodeConnected: boolean
+  gatewayConnected: boolean
   lastError: string | null
 }
 
 export interface EnvironmentSnapshot {
   os: string
-  sshInstalled: boolean
+  runtimeTarget: RuntimeTarget
+  hostSshInstalled: boolean
+  targetSshInstalled: boolean
   openclawInstalled: boolean
   openclawVersion: string | null
-  npmInstalled: boolean
-  pnpmInstalled: boolean
+  latestOpenclawVersion: string | null
+  updateAvailable: boolean
   hasSavedProfile: boolean
   tokenStatus: 'saved' | 'missing' | 'error'
   tokenStatusMessage: string | null
   savedSettings: PersistedSettings | null
   runtimeStatus: RuntimeStatus
   installRecommendation: string
+  wslStatus: WslStatus | null
 }
 
 export interface InstallRequest {
@@ -62,9 +73,11 @@ export interface InstallRequest {
   allowElevation: boolean
 }
 
-export interface InstallResult {
+export interface OperationResult {
+  kind: OperationKind
   strategy: string
   success: boolean
+  step: OperationStep
   stdout: string
   stderr: string
   needsElevation: boolean
@@ -72,9 +85,92 @@ export interface InstallResult {
   followUp: string
 }
 
+export type OperationTaskPhase =
+  | 'idle'
+  | 'running'
+  | 'cancelling'
+  | 'success'
+  | 'error'
+  | 'cancelled'
+
+export interface OperationTaskSnapshot {
+  phase: OperationTaskPhase
+  kind: OperationKind | null
+  step: OperationStep | null
+  canStop: boolean
+  lastResult: OperationResult | null
+  startedAt: number | null
+  endedAt: number | null
+}
+
 export interface LogEntry {
   source: string
   level: string
   message: string
   timestampMs: number
+}
+
+export interface WslStatus {
+  available: boolean
+  distroName: string
+  distroInstalled: boolean
+  ready: boolean
+  needsReboot: boolean
+  message: string | null
+}
+
+export type OperationKind = 'install' | 'checkUpdate' | 'update'
+
+export type OperationStep =
+  | 'detect'
+  | 'bootstrapWsl'
+  | 'ensureSsh'
+  | 'installOpenClaw'
+  | 'checkUpdate'
+  | 'updateOpenClaw'
+
+export type OperationEventStatus = 'running' | 'success' | 'error' | 'log' | 'cancelled'
+export type OperationEventSource = 'system' | 'stdout' | 'stderr'
+
+export interface OperationEvent {
+  kind: OperationKind
+  step: OperationStep
+  status: OperationEventStatus
+  source: OperationEventSource
+  message: string
+  timestampMs: number
+}
+
+export type ConnectionTestStep = 'save' | 'sshTunnel' | 'gatewayProbe'
+export type ConnectionTestEventStatus = 'running' | 'success' | 'error'
+export type ConnectionTestStepStatus = 'pending' | ConnectionTestEventStatus
+
+export interface ConnectionTestEvent {
+  step: ConnectionTestStep
+  status: ConnectionTestEventStatus
+  message: string
+  timestampMs: number
+}
+
+export interface ConnectionTestResult {
+  success: boolean
+  step: ConnectionTestStep
+  summary: string
+  stdout: string
+  stderr: string
+}
+
+export interface ConnectionTestModalStep {
+  step: ConnectionTestStep
+  label: string
+  status: ConnectionTestStepStatus
+  message: string
+}
+
+export interface ConnectionTestModalState {
+  open: boolean
+  phase: 'idle' | 'running' | 'success' | 'error'
+  summary: string
+  result: ConnectionTestResult | null
+  steps: ConnectionTestModalStep[]
 }

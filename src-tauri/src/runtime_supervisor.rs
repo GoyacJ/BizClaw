@@ -12,9 +12,13 @@ use anyhow::{anyhow, Context, Result};
 use tauri::{AppHandle, Emitter};
 
 use crate::{
-    runtime::{build_openclaw_command, build_ssh_command, CommandSpec},
+    app_menu,
+    runtime::{
+        build_native_openclaw_command, build_native_ssh_command, build_wsl_openclaw_command,
+        build_wsl_ssh_command, CommandSpec,
+    },
     runtime_state::RuntimeModel,
-    types::{CompanyProfile, LogEntry, RuntimeStatus, UserProfile},
+    types::{CompanyProfile, LogEntry, RuntimeStatus, RuntimeTarget, TargetProfile, UserProfile},
 };
 
 const LOG_LIMIT: usize = 400;
@@ -59,6 +63,8 @@ pub fn mark_configured(state: &SharedRuntimeState, app: &AppHandle) {
 pub fn start_runtime_processes(
     state: SharedRuntimeState,
     app: AppHandle,
+    runtime_target: RuntimeTarget,
+    target_profile: &TargetProfile,
     company_profile: &CompanyProfile,
     user_profile: &UserProfile,
     token: &str,
@@ -80,80 +86,131 @@ pub fn start_runtime_processes(
         format!("准备建立到 {} 的 SSH 隧道", company_profile.ssh_host),
     );
 
-    let ssh_command = build_runtime_ssh_command(company_profile, ssh_password)?;
-    let mut ssh_child = spawn_command(&ssh_command).context("无法启动 SSH 隧道")?;
-    attach_child_logs(
-        &app,
-        &state,
-        "ssh",
-        ssh_child.stdout.take(),
-        ssh_child.stderr.take(),
-    );
-    {
-        let mut guard = state.lock().expect("runtime mutex poisoned");
-        guard.ssh_child = Some(ssh_child);
+    let result: Result<RuntimeStatus> = (|| {
+        let ssh_command = build_runtime_ssh_command(
+            runtime_target.clone(),
+            target_profile,
+            company_profile,
+            ssh_password,
+        )?;
+        let mut ssh_child = spawn_command(&ssh_command).context("无法启动 SSH 隧道")?;
+        attach_child_logs(
+            &app,
+            &state,
+            "ssh",
+            ssh_child.stdout.take(),
+            ssh_child.stderr.take(),
+        );
+        {
+            let mut guard = state.lock().expect("runtime mutex poisoned");
+            guard.ssh_child = Some(ssh_child);
+        }
+
+        thread::sleep(SSH_BOOT_WAIT);
+        ensure_process_alive(&state, &app, ManagedProcess::Ssh)?;
+        wait_for_ssh_tunnel(&state, &app, company_profile.local_port)?;
+
+        append_log(
+            &state,
+            &app,
+            "system",
+            "info",
+            "SSH 隧道已建立，正在启动 OpenClaw Node",
+        );
+        let mut node_child = spawn_command(&build_runtime_openclaw_command(
+            runtime_target.clone(),
+            target_profile,
+            company_profile,
+            user_profile,
+            token,
+        ))
+        .context("无法启动 OpenClaw Node")?;
+        attach_child_logs(
+            &app,
+            &state,
+            "openclaw",
+            node_child.stdout.take(),
+            node_child.stderr.take(),
+        );
+        {
+            let mut guard = state.lock().expect("runtime mutex poisoned");
+            guard.node_child = Some(node_child);
+        }
+
+        wait_for_node_process(&state, &app, runtime_target)?;
+
+        {
+            let mut guard = state.lock().expect("runtime mutex poisoned");
+            guard.model.mark_running();
+        }
+        emit_status(&state, &app);
+        append_log(
+            &state,
+            &app,
+            "system",
+            "info",
+            "OpenClaw Node 已连接到公司网关。",
+        );
+
+        Ok(snapshot_status(&state))
+    })();
+
+    if let Err(error) = &result {
+        let needs_state_update = !matches!(
+            snapshot_status(&state).phase,
+            crate::types::RuntimePhase::Error
+        );
+        cleanup_processes(&state);
+        if needs_state_update {
+            mark_runtime_error(&state, &app, &error.to_string());
+        }
     }
 
-    thread::sleep(SSH_BOOT_WAIT);
-    ensure_process_alive(&state, &app, ManagedProcess::Ssh)?;
-    wait_for_ssh_tunnel(&state, &app, company_profile.local_port)?;
-
-    append_log(
-        &state,
-        &app,
-        "system",
-        "info",
-        "SSH 隧道已建立，正在启动 OpenClaw Node",
-    );
-    let mut node_child = spawn_command(&build_openclaw_command(
-        company_profile,
-        user_profile,
-        token,
-    ))
-    .context("无法启动 OpenClaw Node")?;
-    attach_child_logs(
-        &app,
-        &state,
-        "openclaw",
-        node_child.stdout.take(),
-        node_child.stderr.take(),
-    );
-    {
-        let mut guard = state.lock().expect("runtime mutex poisoned");
-        guard.node_child = Some(node_child);
-    }
-
-    wait_for_node_process(&state, &app)?;
-
-    {
-        let mut guard = state.lock().expect("runtime mutex poisoned");
-        guard.model.mark_running();
-    }
-    emit_status(&state, &app);
-    append_log(
-        &state,
-        &app,
-        "system",
-        "info",
-        "OpenClaw Node 已连接到公司网关。",
-    );
-
-    Ok(snapshot_status(&state))
+    result
 }
 
 fn build_runtime_ssh_command(
+    runtime_target: RuntimeTarget,
+    target_profile: &TargetProfile,
     company_profile: &CompanyProfile,
     ssh_password: Option<&str>,
 ) -> Result<CommandSpec> {
-    if let Some(password) = ssh_password {
-        let askpass_program = std::env::current_exe().context("无法定位 SSH 密码辅助程序")?;
-        return Ok(build_ssh_command(
-            company_profile,
-            Some((askpass_program.to_string_lossy().as_ref(), password)),
-        ));
-    }
+    match runtime_target {
+        RuntimeTarget::MacNative => {
+            if let Some(password) = ssh_password {
+                let askpass_program =
+                    std::env::current_exe().context("无法定位 SSH 密码辅助程序")?;
+                return Ok(build_native_ssh_command(
+                    company_profile,
+                    Some((askpass_program.to_string_lossy().as_ref(), password)),
+                ));
+            }
 
-    Ok(build_ssh_command(company_profile, None))
+            Ok(build_native_ssh_command(company_profile, None))
+        }
+        RuntimeTarget::WindowsWsl => Ok(build_wsl_ssh_command(
+            target_profile,
+            company_profile,
+            ssh_password,
+        )),
+    }
+}
+
+fn build_runtime_openclaw_command(
+    runtime_target: RuntimeTarget,
+    target_profile: &TargetProfile,
+    company_profile: &CompanyProfile,
+    user_profile: &UserProfile,
+    token: &str,
+) -> CommandSpec {
+    match runtime_target {
+        RuntimeTarget::MacNative => {
+            build_native_openclaw_command(company_profile, user_profile, token)
+        }
+        RuntimeTarget::WindowsWsl => {
+            build_wsl_openclaw_command(target_profile, company_profile, user_profile, token)
+        }
+    }
 }
 
 pub fn stop_runtime_processes(state: SharedRuntimeState, app: AppHandle) -> Result<RuntimeStatus> {
@@ -333,9 +390,13 @@ fn wait_for_local_port(port: u16, max_wait: Duration, poll_interval: Duration) -
     }
 }
 
-fn wait_for_node_process(state: &SharedRuntimeState, app: &AppHandle) -> Result<()> {
+fn wait_for_node_process(
+    state: &SharedRuntimeState,
+    app: &AppHandle,
+    runtime_target: RuntimeTarget,
+) -> Result<()> {
     let started = std::time::Instant::now();
-    let boot_wait = node_boot_wait();
+    let boot_wait = node_boot_wait(runtime_target);
 
     loop {
         ensure_process_alive(state, app, ManagedProcess::OpenClaw)?;
@@ -348,20 +409,20 @@ fn wait_for_node_process(state: &SharedRuntimeState, app: &AppHandle) -> Result<
     }
 }
 
-fn node_boot_wait() -> Duration {
-    node_boot_wait_for_os(std::env::consts::OS)
+fn node_boot_wait(runtime_target: RuntimeTarget) -> Duration {
+    node_boot_wait_for_target(runtime_target)
 }
 
-fn node_boot_wait_for_os(operating_system: &str) -> Duration {
-    if operating_system == "windows" {
-        WINDOWS_NODE_BOOT_WAIT
-    } else {
-        DEFAULT_NODE_BOOT_WAIT
+fn node_boot_wait_for_target(runtime_target: RuntimeTarget) -> Duration {
+    match runtime_target {
+        RuntimeTarget::WindowsWsl => WINDOWS_NODE_BOOT_WAIT,
+        RuntimeTarget::MacNative => DEFAULT_NODE_BOOT_WAIT,
     }
 }
 
 fn emit_status(state: &SharedRuntimeState, app: &AppHandle) {
     let _ = app.emit("runtime-status", snapshot_status(state));
+    let _ = app_menu::refresh_status_menu_from_state(app);
 }
 
 fn append_log(
@@ -432,7 +493,8 @@ impl ManagedProcess {
 mod tests {
     use std::{net::TcpListener, thread, time::Duration};
 
-    use super::{node_boot_wait_for_os, wait_for_local_port};
+    use super::{node_boot_wait_for_target, wait_for_local_port};
+    use crate::types::RuntimeTarget;
 
     #[test]
     fn waits_until_local_port_becomes_available() {
@@ -456,8 +518,14 @@ mod tests {
 
     #[test]
     fn windows_node_boot_wait_is_longer_than_default() {
-        assert_eq!(node_boot_wait_for_os("windows"), Duration::from_secs(4));
-        assert_eq!(node_boot_wait_for_os("macos"), Duration::from_secs(1));
+        assert_eq!(
+            node_boot_wait_for_target(RuntimeTarget::WindowsWsl),
+            Duration::from_secs(4)
+        );
+        assert_eq!(
+            node_boot_wait_for_target(RuntimeTarget::MacNative),
+            Duration::from_secs(1)
+        );
     }
 
     fn unused_local_port() -> u16 {

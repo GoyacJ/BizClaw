@@ -95,10 +95,15 @@ describe('release workflow', () => {
   })
 
   it('signs updater artifacts during macOS and Windows builds', () => {
-    expect(readJobBlock('build-macos')).toMatch(/TAURI_SIGNING_PRIVATE_KEY/u)
-    expect(readJobBlock('build-macos')).toMatch(/TAURI_SIGNING_PRIVATE_KEY_PASSWORD/u)
-    expect(readJobBlock('build-windows')).toMatch(/TAURI_SIGNING_PRIVATE_KEY/u)
-    expect(readJobBlock('build-windows')).toMatch(/TAURI_SIGNING_PRIVATE_KEY_PASSWORD/u)
+    const macJob = readJobBlock('build-macos')
+    const windowsJob = readJobBlock('build-windows')
+
+    expect(macJob).toMatch(/TAURI_SIGNING_PRIVATE_KEY/u)
+    expect(macJob).toMatch(/TAURI_SIGNING_PRIVATE_KEY_PASSWORD/u)
+    expect(macJob).toMatch(/node \.\/scripts\/prepare-tauri-signing-key\.mjs/u)
+    expect(windowsJob).toMatch(/TAURI_SIGNING_PRIVATE_KEY/u)
+    expect(windowsJob).toMatch(/TAURI_SIGNING_PRIVATE_KEY_PASSWORD/u)
+    expect(windowsJob).toMatch(/node \.\/scripts\/prepare-tauri-signing-key\.mjs/u)
   })
 
   it('uploads updater artifacts and publishes latest.json', () => {

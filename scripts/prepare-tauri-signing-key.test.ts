@@ -1,0 +1,25 @@
+// @vitest-environment node
+
+import { describe, expect, it } from 'vitest'
+
+import { normalizeTauriSigningKey } from './prepare-tauri-signing-key.mjs'
+
+describe('normalizeTauriSigningKey', () => {
+  it('keeps a valid single-line signing key unchanged', () => {
+    const key = 'dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5ClJXUlRZMEl5dWpodzVBQTdVajVmRTJiUDZJK2hNMkZyU0FwczU0YzlGcjBycTNMd2hxSUFBQkFBQUFBQUFBQUFBQUlBQUFBQWU2c0RIMlVIOGVlM1BkTnF1cjlDcHNTZ0dhcEFoY2hLTnE5SldidUc3SnpXdUtxVU9qdEVTMStacURKL3lZSjhFbkwrVThOVkx2Y1V0SUhxbzhuOGp1aklzdXR2QzNoS3FEbXduWm5rRHBKeUxYMDVnRGZrOWRVRG1aRjN3aW9RdkZ4cFdNRjZWTWs9Cg=='
+
+    expect(normalizeTauriSigningKey(key)).toBe(key)
+  })
+
+  it('decodes percent-escaped newlines that were accidentally stored in GitHub secrets', () => {
+    const keyWithEscapedNewline = 'dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5ClJXUlRZMEl5dWpodzVBQTdVajVmRTJiUDZJK2hNMkZyU0FwczU0YzlGcjBycTNMd2hxSUFBQkFBQUFBQUFBQUFBQUlBQUFBQWU2c0RIMlVIOGVlM1BkTnF1cjlDcHNTZ0dhcEFoY2hLTnE5SldidUc3SnpXdUtxVU9qdEVTMStacURKL3lZSjhFbkwrVThOVkx2Y1V0SUhxbzhuOGp1aklzdXR2QzNoS3FEbXduWm5rRHBKeUxYMDVnRGZrOWRVRG1aRjN3aW9RdkZ4cFdNRjZWTWs9Cg==%0A'
+
+    expect(normalizeTauriSigningKey(keyWithEscapedNewline)).toBe(
+      'dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5ClJXUlRZMEl5dWpodzVBQTdVajVmRTJiUDZJK2hNMkZyU0FwczU0YzlGcjBycTNMd2hxSUFBQkFBQUFBQUFBQUFBQUlBQUFBQWU2c0RIMlVIOGVlM1BkTnF1cjlDcHNTZ0dhcEFoY2hLTnE5SldidUc3SnpXdUtxVU9qdEVTMStacURKL3lZSjhFbkwrVThOVkx2Y1V0SUhxbzhuOGp1aklzdXR2QzNoS3FEbXduWm5rRHBKeUxYMDVnRGZrOWRVRG1aRjN3aW9RdkZ4cFdNRjZWTWs9Cg==',
+    )
+  })
+
+  it('fails fast with a helpful error when the secret still contains invalid characters', () => {
+    expect(() => normalizeTauriSigningKey('abc%zz')).toThrowError(/TAURI_SIGNING_PRIVATE_KEY/u)
+  })
+})

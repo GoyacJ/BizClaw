@@ -9,7 +9,7 @@ export function normalizeTauriSigningKey(value) {
   }
 
   if (existsSync(trimmed)) {
-    return resolve(trimmed)
+    return trimmed
   }
 
   let normalized = trimmed
@@ -21,12 +21,28 @@ export function normalizeTauriSigningKey(value) {
     }
   }
 
-  normalized = normalized.replace(/\s+/gu, '')
-  if (!/^[A-Za-z0-9+/=]+$/u.test(normalized)) {
+  normalized = normalized.trim()
+  if (normalized.startsWith('untrusted comment:')) {
+    return normalized.endsWith('\n') ? normalized : `${normalized}\n`
+  }
+
+  const compact = normalized.replace(/\s+/gu, '')
+  if (!/^[A-Za-z0-9+/=]+$/u.test(compact)) {
     throw new Error('TAURI_SIGNING_PRIVATE_KEY contains unexpected characters. Store the exact key content without extra encoding.')
   }
 
-  return normalized
+  let decoded
+  try {
+    decoded = Buffer.from(compact, 'base64').toString('utf8')
+  } catch (error) {
+    throw new Error(`TAURI_SIGNING_PRIVATE_KEY could not be base64-decoded: ${error instanceof Error ? error.message : String(error)}`)
+  }
+
+  if (!decoded.startsWith('untrusted comment:')) {
+    throw new Error('TAURI_SIGNING_PRIVATE_KEY did not decode to a valid minisign key file.')
+  }
+
+  return decoded.endsWith('\n') ? decoded : `${decoded}\n`
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
@@ -40,11 +56,11 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
 
   const normalized = normalizeTauriSigningKey(rawKey)
   const keyPath = existsSync(normalized)
-    ? normalized
+    ? resolve(normalized)
     : join(runnerTemp, 'tauri-updater.key')
 
   if (!existsSync(normalized)) {
-    writeFileSync(keyPath, `${normalized}\n`)
+    writeFileSync(keyPath, normalized)
   }
 
   appendFileSync(githubEnv, `TAURI_SIGNING_PRIVATE_KEY=${keyPath}\n`)

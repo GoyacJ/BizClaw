@@ -21,6 +21,7 @@ import {
   onRuntimeLog,
   onRuntimeStatus,
   openManualInstall,
+  openSupportUrl,
   saveProfile,
   saveUiPreferences,
   startRuntime,
@@ -51,14 +52,19 @@ import type {
   BizClawUpdateState,
   CompanyProfileDraft,
   ConnectionTestEvent,
+  InstallRemediationModalState,
   ConnectionTestModalState,
   ConnectionTestModalStep,
   ConnectionTestResult,
   EnvironmentSnapshot,
+  InstallRequest,
   LogEntry,
   OperationEvent,
+  OperationKind,
+  OperationResult,
   OperationTaskSnapshot,
   RuntimeStatus,
+  SupportUrlTarget,
   TargetProfile,
   ThemePreference,
   LocalePreference,
@@ -163,6 +169,19 @@ function createConnectionTestModalState(): ConnectionTestModalState {
   }
 }
 
+function createInstallRemediationModalState(): InstallRemediationModalState {
+  return {
+    open: false,
+    kind: null,
+    actionKind: null,
+    title: '',
+    detail: '',
+    confirmLabel: '',
+    supportLabel: '',
+    supportUrlTarget: null,
+  }
+}
+
 function createIdleOperationTask(): OperationTaskSnapshot {
   return {
     phase: 'idle',
@@ -212,6 +231,7 @@ export function useAppModel() {
   const userProfile = reactive(defaultUserProfile())
   const targetProfile = reactive(defaultTargetProfile())
   const connectionTestModal = reactive<ConnectionTestModalState>(createConnectionTestModalState())
+  const installRemediationModal = reactive<InstallRemediationModalState>(createInstallRemediationModalState())
   const unlistenCallbacks: Array<() => void> = []
   const pendingBizClawUpdate = shallowRef<PendingBizClawUpdate | null>(null)
   let stopObservingSystemTheme: (() => void) | null = null
@@ -683,6 +703,43 @@ export function useAppModel() {
     connectionTestModal.steps = createConnectionTestSteps()
   }
 
+  function resetInstallRemediationModal() {
+    Object.assign(installRemediationModal, createInstallRemediationModalState())
+  }
+
+  function openInstallRemediationModal(
+    actionKind: Extract<OperationKind, 'install' | 'update'>,
+    result: OperationResult,
+  ) {
+    const remediation = result.remediation
+    if (!remediation) {
+      resetInstallRemediationModal()
+      return
+    }
+
+    installRemediationModal.open = true
+    installRemediationModal.kind = remediation.kind
+    installRemediationModal.actionKind = actionKind
+    installRemediationModal.supportUrlTarget = remediation.urlTarget
+
+    if (remediation.kind === 'requestElevation') {
+      installRemediationModal.title = translate('install.remediation.elevationTitle')
+      installRemediationModal.detail = actionKind === 'install'
+        ? translate('install.remediation.elevationInstallDetail')
+        : translate('install.remediation.elevationUpdateDetail')
+      installRemediationModal.confirmLabel = translate('install.remediation.elevationConfirm')
+      installRemediationModal.supportLabel = ''
+      return
+    }
+
+    installRemediationModal.title = translate('install.remediation.homebrewTitle')
+    installRemediationModal.detail = actionKind === 'install'
+      ? translate('install.remediation.homebrewInstallDetail')
+      : translate('install.remediation.homebrewUpdateDetail')
+    installRemediationModal.confirmLabel = translate('install.remediation.homebrewConfirm')
+    installRemediationModal.supportLabel = translate('install.remediation.homebrewSupport')
+  }
+
   function openConnectionTestModal() {
     connectionTestModal.open = true
     connectionTestModal.phase = 'running'
@@ -784,21 +841,36 @@ export function useAppModel() {
     }
   }
 
-  async function installCli() {
-    activeSection.value = 'install'
+  async function runOpenClawOperation(
+    kind: Extract<OperationKind, 'install' | 'update'>,
+    request: InstallRequest,
+  ) {
     resetOperationState()
-    const result = await withActionError('install', () =>
-      installOpenClaw({
-        preferOfficial: true,
-        allowElevation: false,
-      }),
-    )
+    const action = kind === 'install' ? 'install' : 'update'
+    const runner = kind === 'install' ? installOpenClaw : updateOpenClaw
+    const result = await withActionError(action, () => runner(request))
 
     if (!result) {
-      return
+      return null
     }
 
     applyOperationTaskSnapshot(result)
+    const lastResult = result.lastResult
+    const remediation = lastResult?.remediation
+    if (result.phase === 'error' && lastResult && remediation) {
+      openInstallRemediationModal(kind, lastResult)
+    } else {
+      resetInstallRemediationModal()
+    }
+    return result
+  }
+
+  async function installCli() {
+    activeSection.value = 'install'
+    await runOpenClawOperation('install', {
+      preferOfficial: true,
+      allowElevation: false,
+    })
   }
 
   async function checkForUpdates() {
@@ -813,19 +885,10 @@ export function useAppModel() {
 
   async function updateCli() {
     activeSection.value = 'install'
-    resetOperationState()
-    const result = await withActionError('update', () =>
-      updateOpenClaw({
-        preferOfficial: true,
-        allowElevation: false,
-      }),
-    )
-
-    if (!result) {
-      return
-    }
-
-    applyOperationTaskSnapshot(result)
+    await runOpenClawOperation('update', {
+      preferOfficial: true,
+      allowElevation: false,
+    })
   }
 
   async function stopOperation() {
@@ -926,6 +989,37 @@ export function useAppModel() {
     } finally {
       manualInstallBusy.value = false
     }
+  }
+
+  function closeInstallRemediationModal() {
+    resetInstallRemediationModal()
+  }
+
+  async function openInstallRemediationSupportUrl() {
+    if (!installRemediationModal.supportUrlTarget) {
+      return
+    }
+
+    manualInstallBusy.value = true
+    try {
+      await openSupportUrl(installRemediationModal.supportUrlTarget)
+    } finally {
+      manualInstallBusy.value = false
+    }
+  }
+
+  async function confirmInstallRemediation() {
+    const { actionKind, kind } = installRemediationModal
+    if (!actionKind || !kind) {
+      return
+    }
+
+    const request: InstallRequest = {
+      preferOfficial: true,
+      allowElevation: kind === 'requestElevation',
+    }
+    resetInstallRemediationModal()
+    await runOpenClawOperation(actionKind, request)
   }
 
   async function persistProfile() {
@@ -1145,7 +1239,9 @@ export function useAppModel() {
     canTestConnection,
     checkForUpdates,
     closeConnectionTestModal,
+    closeInstallRemediationModal,
     companyProfile,
+    confirmInstallRemediation,
     connectDisabledReason,
     canStopOperation,
     connectionTestBusy,
@@ -1159,7 +1255,9 @@ export function useAppModel() {
     installBizClawUpdate,
     launchManualInstall,
     logs,
+    installRemediationModal,
     manualInstallBusy,
+    openInstallRemediationSupportUrl,
     operationError,
     operationEvents,
     operationHeadline,

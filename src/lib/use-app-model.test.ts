@@ -9,14 +9,18 @@ const apiMocks = vi.hoisted(() => ({
   streamLogs: vi.fn(),
   getOperationStatus: vi.fn(),
   getOperationEvents: vi.fn(),
+  installOpenClaw: vi.fn(),
   onRuntimeLog: vi.fn(),
   onRuntimeStatus: vi.fn(),
   onOperationStatus: vi.fn(),
   onOperationEvent: vi.fn(),
   onConnectionTestEvent: vi.fn(),
   onRefreshRequested: vi.fn(),
+  openSupportUrl: vi.fn(),
   saveProfile: vi.fn(),
   saveUiPreferences: vi.fn(),
+  stopOpenClawOperation: vi.fn(),
+  updateOpenClaw: vi.fn(),
 }))
 
 const bizclawUpdaterMocks = vi.hoisted(() => ({
@@ -33,7 +37,7 @@ vi.mock('@/lib/api', () => ({
   detectEnvironment: apiMocks.detectEnvironment,
   getOperationEvents: apiMocks.getOperationEvents,
   getOperationStatus: apiMocks.getOperationStatus,
-  installOpenClaw: vi.fn(),
+  installOpenClaw: apiMocks.installOpenClaw,
   onConnectionTestEvent: apiMocks.onConnectionTestEvent,
   onOperationEvent: apiMocks.onOperationEvent,
   onOperationStatus: apiMocks.onOperationStatus,
@@ -41,14 +45,15 @@ vi.mock('@/lib/api', () => ({
   onRuntimeLog: apiMocks.onRuntimeLog,
   onRuntimeStatus: apiMocks.onRuntimeStatus,
   openManualInstall: vi.fn(),
+  openSupportUrl: apiMocks.openSupportUrl,
   saveProfile: apiMocks.saveProfile,
   saveUiPreferences: apiMocks.saveUiPreferences,
   startRuntime: vi.fn(),
-  stopOpenClawOperation: vi.fn(),
+  stopOpenClawOperation: apiMocks.stopOpenClawOperation,
   stopRuntime: vi.fn(),
   streamLogs: apiMocks.streamLogs,
   testConnection: vi.fn(),
-  updateOpenClaw: vi.fn(),
+  updateOpenClaw: apiMocks.updateOpenClaw,
 }))
 
 vi.mock('@/lib/bizclaw-updater', () => ({
@@ -615,6 +620,160 @@ describe('useAppModel', () => {
     expect(model.bizclawUpdate.value.totalBytes).toBe(1024)
     expect(model.bizclawUpdatePrimaryAction.value).toBe('立即重启')
   })
+
+  it('prompts for elevation and retries the install after confirmation', async () => {
+    apiMocks.detectEnvironment
+      .mockResolvedValueOnce(createSnapshot({
+        hostSshInstalled: true,
+        targetSshInstalled: true,
+      }))
+      .mockResolvedValue(createSnapshot({
+        hostSshInstalled: true,
+        targetSshInstalled: true,
+      }))
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.installOpenClaw
+      .mockResolvedValueOnce(createTask({
+        phase: 'error',
+        kind: 'install',
+        step: 'installOpenClaw',
+        success: false,
+        followUp: '需要管理员权限才能继续安装。',
+        remediation: {
+          kind: 'requestElevation',
+          urlTarget: null,
+        },
+      }))
+      .mockResolvedValueOnce(createTask({
+        phase: 'success',
+        kind: 'install',
+        step: 'installOpenClaw',
+        success: true,
+        followUp: 'OpenClaw 安装完成，请继续保存连接并启动托管。',
+      }))
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+    await model.installCli()
+    await flushPromises()
+
+    expect(apiMocks.installOpenClaw).toHaveBeenNthCalledWith(1, {
+      preferOfficial: true,
+      allowElevation: false,
+    })
+    expect(model.installRemediationModal.open).toBe(true)
+    expect(model.installRemediationModal.kind).toBe('requestElevation')
+
+    await model.confirmInstallRemediation()
+    await flushPromises()
+
+    expect(apiMocks.installOpenClaw).toHaveBeenNthCalledWith(2, {
+      preferOfficial: true,
+      allowElevation: true,
+    })
+    expect(model.installRemediationModal.open).toBe(false)
+    expect(model.operationTask.value.phase).toBe('success')
+  })
+
+  it('guides Homebrew installation and retries the update after the user asks to continue', async () => {
+    apiMocks.detectEnvironment
+      .mockResolvedValueOnce(createSnapshot({
+        hostSshInstalled: false,
+        targetSshInstalled: false,
+      }))
+      .mockResolvedValue(createSnapshot({
+        hostSshInstalled: true,
+        targetSshInstalled: true,
+      }))
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.openSupportUrl.mockResolvedValue(undefined)
+    apiMocks.updateOpenClaw
+      .mockResolvedValueOnce(createTask({
+        phase: 'error',
+        kind: 'update',
+        step: 'ensureSsh',
+        success: false,
+        followUp: '当前未检测到 Homebrew，请先安装 Homebrew 后重试。',
+        remediation: {
+          kind: 'installHomebrew',
+          urlTarget: 'homebrewInstall',
+        },
+      }))
+      .mockResolvedValueOnce(createTask({
+        phase: 'success',
+        kind: 'update',
+        step: 'updateOpenClaw',
+        success: true,
+        followUp: 'OpenClaw 更新完成，请重新检测版本或直接启动连接。',
+      }))
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+    await model.updateCli()
+    await flushPromises()
+
+    expect(apiMocks.updateOpenClaw).toHaveBeenNthCalledWith(1, {
+      preferOfficial: true,
+      allowElevation: false,
+    })
+    expect(model.installRemediationModal.open).toBe(true)
+    expect(model.installRemediationModal.kind).toBe('installHomebrew')
+
+    await model.openInstallRemediationSupportUrl()
+    expect(apiMocks.openSupportUrl).toHaveBeenCalledWith('homebrewInstall')
+
+    await model.confirmInstallRemediation()
+    await flushPromises()
+
+    expect(apiMocks.updateOpenClaw).toHaveBeenNthCalledWith(2, {
+      preferOfficial: true,
+      allowElevation: false,
+    })
+    expect(model.installRemediationModal.open).toBe(false)
+    expect(model.operationTask.value.phase).toBe('success')
+  })
 })
 
 async function flushPromises() {
@@ -665,6 +824,46 @@ function createIdleTask(): OperationTaskSnapshot {
     lastResult: null,
     startedAt: null,
     endedAt: null,
+  }
+}
+
+function createTask({
+  phase,
+  kind,
+  step,
+  success,
+  followUp,
+  remediation = null,
+}: {
+  phase: OperationTaskSnapshot['phase']
+  kind: 'install' | 'update'
+  step: 'ensureSsh' | 'installOpenClaw' | 'updateOpenClaw'
+  success: boolean
+  followUp: string
+  remediation?: {
+    kind: 'requestElevation' | 'installHomebrew'
+    urlTarget: 'homebrewInstall' | null
+  } | null
+}): OperationTaskSnapshot {
+  return {
+    phase,
+    kind,
+    step,
+    canStop: false,
+    lastResult: {
+      kind,
+      strategy: success ? 'official' : 'official-failed',
+      success,
+      step,
+      stdout: '',
+      stderr: '',
+      needsElevation: remediation?.kind === 'requestElevation',
+      manualUrl: 'https://docs.openclaw.ai/install',
+      followUp,
+      remediation,
+    } as never,
+    startedAt: 1,
+    endedAt: 2,
   }
 }
 

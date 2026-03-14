@@ -11,6 +11,7 @@ import type {
   OperationEvent,
   OperationTaskSnapshot,
   PersistedSettings,
+  SupportUrlTarget,
   UiPreferences,
   TargetProfile,
   RuntimeStatus,
@@ -154,7 +155,10 @@ export const getOperationEvents = () => (
 export const stopOpenClawOperation = () =>
   tauriInvoke<OperationTaskSnapshot>('stop_openclaw_operation')
 
-export const openManualInstall = () => tauriInvoke<void>('open_manual_install')
+export const openSupportUrl = (target: SupportUrlTarget) =>
+  tauriInvoke<void>('open_support_url', { target })
+
+export const openManualInstall = () => openSupportUrl('openclawManual')
 
 export const saveProfile = (
   companyProfile: CompanyProfile,

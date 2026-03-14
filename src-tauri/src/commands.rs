@@ -21,8 +21,8 @@ use crate::{
     config_store::{JsonSettingsStore, JsonUiPreferencesStore},
     install::{
         command_available, compare_versions, current_platform, default_runtime_target,
-        detect_wsl_status, elevated_install_plan, fallback_install_plans_for_target,
-        looks_like_permission_error, official_install_plan_for_target,
+        detect_wsl_status, elevated_install_plan, install_plans_for_target,
+        looks_like_permission_error, macos_ensure_ssh_plan, update_plans_for_target,
         read_latest_openclaw_version, read_openclaw_version, target_command_available,
         wsl_bootstrap_plan, wsl_ensure_ssh_plan, InstallPlan, Platform, MANUAL_INSTALL_URL,
     },
@@ -44,9 +44,10 @@ use crate::{
         CompanyProfile, ConnectionTestEvent, ConnectionTestEventStatus, ConnectionTestResult,
         ConnectionTestStep, EnvironmentSnapshot, InstallRequest, LocalePreference, LogEntry,
         OperationEvent, OperationEventSource, OperationEventStatus, OperationKind, OperationResult,
-        OperationStep, OperationTaskPhase, OperationTaskSnapshot, PersistedSettings, RuntimePhase,
-        RuntimeStatus, RuntimeTarget, TargetProfile, ThemePreference, TokenStatus, UiPreferences,
-        UserProfile, WslStatus,
+        OperationRemediation, OperationRemediationKind, OperationStep, OperationTaskPhase,
+        OperationTaskSnapshot, PersistedSettings, RuntimePhase, RuntimeStatus, RuntimeTarget,
+        SupportUrlTarget, TargetProfile, ThemePreference, TokenStatus, UiPreferences, UserProfile,
+        WslStatus,
     },
     validation::{
         saved_settings_are_complete, validate_company_profile_with_locale,
@@ -71,6 +72,8 @@ impl Default for AppState {
         }
     }
 }
+
+const HOMEBREW_INSTALL_URL: &str = "https://brew.sh";
 
 trait SettingsStoreAccess {
     fn load(&self) -> Result<Option<PersistedSettings>>;
@@ -293,8 +296,13 @@ pub fn stop_openclaw_operation(
 
 #[tauri::command]
 pub fn open_manual_install(app: AppHandle) -> Result<(), String> {
+    open_support_url(app, SupportUrlTarget::OpenClawManual)
+}
+
+#[tauri::command]
+pub fn open_support_url(app: AppHandle, target: SupportUrlTarget) -> Result<(), String> {
     app.opener()
-        .open_url(MANUAL_INSTALL_URL, None::<&str>)
+        .open_url(support_url(target), None::<&str>)
         .map_err(err_to_string)
 }
 
@@ -619,6 +627,13 @@ fn current_locale(app: &AppHandle) -> LocalePreference {
         .ok()
         .map(|preferences| preferences.locale)
         .unwrap_or_default()
+}
+
+fn support_url(target: SupportUrlTarget) -> &'static str {
+    match target {
+        SupportUrlTarget::OpenClawManual => MANUAL_INSTALL_URL,
+        SupportUrlTarget::HomebrewInstall => HOMEBREW_INSTALL_URL,
+    }
 }
 
 fn ui_preferences_store(app: &AppHandle) -> Result<JsonUiPreferencesStore> {
@@ -1366,20 +1381,6 @@ fn run_install_or_update(
         return Ok(result);
     }
 
-    if matches!(runtime_target, RuntimeTarget::MacNative) && !resolved.host_ssh_installed {
-        return Ok(failure_result(
-            locale,
-            kind,
-            OperationStep::EnsureSsh,
-            "missing-ssh",
-            locale_text(
-                locale,
-                "当前未检测到 macOS 的 ssh 命令，请先修复系统 OpenSSH 后再重试。",
-                "macOS built-in ssh was not detected. Fix system OpenSSH and try again.",
-            ),
-        ));
-    }
-
     if matches!(runtime_target, RuntimeTarget::WindowsWsl) {
         let wsl_status = resolved
             .wsl_status
@@ -1410,6 +1411,8 @@ fn run_install_or_update(
             }
             let ready_after = detect_wsl_status(&target_profile);
             if !bootstrap.success || !ready_after.ready {
+                let remediation =
+                    remediation_for_failed_plan(request.allow_elevation, &bootstrap);
                 let follow_up = if bootstrap.stdout.to_lowercase().contains("restart")
                     || bootstrap.stderr.to_lowercase().contains("restart")
                 {
@@ -1435,15 +1438,39 @@ fn run_install_or_update(
                     needs_elevation: bootstrap.needs_elevation,
                     manual_url: MANUAL_INSTALL_URL.into(),
                     follow_up: follow_up.to_string(),
+                    remediation,
                 });
             }
             resolved = resolve_environment(runtime_target.clone(), &target_profile, false);
         }
     }
 
-    if matches!(runtime_target, RuntimeTarget::WindowsWsl) && !resolved.target_ssh_installed {
+    if !resolved.target_ssh_installed {
         let snapshot = update_step(operation_state, OperationStep::EnsureSsh);
         emit_operation_status(app, &snapshot);
+        if matches!(runtime_target, RuntimeTarget::MacNative) && !command_available("brew") {
+            return Ok(OperationResult {
+                kind,
+                strategy: "missing-homebrew".into(),
+                success: false,
+                step: OperationStep::EnsureSsh,
+                stdout: String::new(),
+                stderr: String::new(),
+                needs_elevation: false,
+                manual_url: MANUAL_INSTALL_URL.into(),
+                follow_up: locale_text(
+                    locale,
+                    "当前未检测到 Homebrew。请先安装 Homebrew，再让 BizClaw 自动补齐 OpenSSH。",
+                    "Homebrew is not installed. Install Homebrew first, then let BizClaw install OpenSSH automatically.",
+                )
+                .into(),
+                remediation: Some(homebrew_install_remediation()),
+            });
+        }
+        let ssh_plan = match runtime_target {
+            RuntimeTarget::MacNative => macos_ensure_ssh_plan(),
+            RuntimeTarget::WindowsWsl => wsl_ensure_ssh_plan(&target_profile),
+        };
         let ssh_result = run_single_plan(
             app,
             operation_state,
@@ -1452,7 +1479,7 @@ fn run_install_or_update(
             OperationStep::EnsureSsh,
             current_platform()?,
             request.allow_elevation,
-            &wsl_ensure_ssh_plan(&target_profile),
+            &ssh_plan,
         )?;
         if cancel_requested(operation_state) {
             return Ok(cancelled_result(
@@ -1465,6 +1492,7 @@ fn run_install_or_update(
             ));
         }
         if !ssh_result.success {
+            let remediation = remediation_for_failed_plan(request.allow_elevation, &ssh_result);
             return Ok(OperationResult {
                 kind,
                 strategy: ssh_result.strategy,
@@ -1474,12 +1502,20 @@ fn run_install_or_update(
                 stderr: ssh_result.stderr,
                 needs_elevation: ssh_result.needs_elevation,
                 manual_url: MANUAL_INSTALL_URL.into(),
-                follow_up: locale_text(
-                    locale,
-                    "请确认 Ubuntu 已完成初始化，且当前用户具备安装 openssh-client 的 sudo 权限。",
-                    "Make sure Ubuntu initialization is complete and the current user has sudo permission to install openssh-client.",
-                )
+                follow_up: match runtime_target {
+                    RuntimeTarget::MacNative => locale_text(
+                        locale,
+                        "BizClaw 未能通过 Homebrew 自动安装 OpenSSH，请查看输出后重试。",
+                        "BizClaw could not install OpenSSH via Homebrew. Check the output and try again.",
+                    ),
+                    RuntimeTarget::WindowsWsl => locale_text(
+                        locale,
+                        "请确认 Ubuntu 已完成初始化，且当前用户具备安装 openssh-client 的 sudo 权限。",
+                        "Make sure Ubuntu initialization is complete and the current user has sudo permission to install openssh-client.",
+                    ),
+                }
                 .into(),
+                remediation,
             });
         }
         resolved = resolve_environment(runtime_target.clone(), &target_profile, false);
@@ -1544,6 +1580,7 @@ fn run_install_or_update(
                     "OpenClaw is already up to date.",
                 )
                 .into(),
+                remediation: None,
             });
         }
         emit_operation_event(
@@ -1596,23 +1633,30 @@ fn run_install_or_update(
                 "OpenClaw is already detected. Skipping installation.",
             )
             .into(),
+            remediation: None,
         });
     }
 
     let platform = current_platform()?;
-    let mut plans = Vec::new();
-    if request.prefer_official {
-        plans.push(official_install_plan_for_target(
+    let has_npm = target_command_available(runtime_target.clone(), &target_profile, "npm");
+    let has_pnpm = target_command_available(runtime_target.clone(), &target_profile, "pnpm");
+    let plans = if matches!(kind, OperationKind::Update) {
+        update_plans_for_target(
             runtime_target.clone(),
             &target_profile,
-        ));
-    }
-    plans.extend(fallback_install_plans_for_target(
-        runtime_target.clone(),
-        &target_profile,
-        target_command_available(runtime_target.clone(), &target_profile, "npm"),
-        target_command_available(runtime_target.clone(), &target_profile, "pnpm"),
-    ));
+            request.prefer_official,
+            has_npm,
+            has_pnpm,
+        )
+    } else {
+        install_plans_for_target(
+            runtime_target.clone(),
+            &target_profile,
+            request.prefer_official,
+            has_npm,
+            has_pnpm,
+        )
+    };
 
     let step = if matches!(kind, OperationKind::Update) {
         OperationStep::UpdateOpenClaw
@@ -1669,6 +1713,7 @@ fn run_install_or_update(
                     )
                     .into()
                 },
+                remediation: None,
             });
         }
         if cancelled {
@@ -1691,6 +1736,7 @@ fn run_install_or_update(
         stderr: locale_text(locale, "安装未执行。", "Installation did not run.").into(),
         needs_elevation: false,
     });
+    let remediation = remediation_for_failed_plan(request.allow_elevation, &result);
     Ok(OperationResult {
         kind,
         strategy: result.strategy,
@@ -1706,6 +1752,7 @@ fn run_install_or_update(
             "The action did not complete. Check the output and try again, or use the official manual installation guide.",
         )
         .into(),
+        remediation,
     })
 }
 
@@ -1772,6 +1819,7 @@ fn cancelled_result(
         needs_elevation: false,
         manual_url: MANUAL_INSTALL_URL.into(),
         follow_up: cancelled_follow_up(locale, kind).into(),
+        remediation: None,
     }
 }
 
@@ -1792,7 +1840,29 @@ fn failure_result(
         needs_elevation: false,
         manual_url: MANUAL_INSTALL_URL.into(),
         follow_up: follow_up.into(),
+        remediation: None,
     }
+}
+
+fn request_elevation_remediation() -> OperationRemediation {
+    OperationRemediation {
+        kind: OperationRemediationKind::RequestElevation,
+        url_target: None,
+    }
+}
+
+fn homebrew_install_remediation() -> OperationRemediation {
+    OperationRemediation {
+        kind: OperationRemediationKind::InstallHomebrew,
+        url_target: Some(SupportUrlTarget::HomebrewInstall),
+    }
+}
+
+fn remediation_for_failed_plan(
+    allow_elevation: bool,
+    result: &StreamedPlanResult,
+) -> Option<OperationRemediation> {
+    (!allow_elevation && result.needs_elevation).then(request_elevation_remediation)
 }
 
 fn run_single_plan(

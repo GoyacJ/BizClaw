@@ -29,7 +29,9 @@ const {
   canTestConnection,
   checkForUpdates,
   closeConnectionTestModal,
+  closeInstallRemediationModal,
   companyProfile,
+  confirmInstallRemediation,
   connectDisabledReason,
   connectionTestBusy,
   connectionTestCloseDisabled,
@@ -40,9 +42,11 @@ const {
   installBusyAction,
   installCli,
   installBizClawUpdate,
+  installRemediationModal,
   launchManualInstall,
   logs,
   manualInstallBusy,
+  openInstallRemediationSupportUrl,
   operationError,
   operationEvents,
   operationHeadline,
@@ -367,6 +371,40 @@ function connectionStepLabel(status: ConnectionTestModalStep['status']) {
         <div class="button-row button-row--end">
           <button class="primary-button" :disabled="connectionTestCloseDisabled" @click="closeConnectionTestModal">
             {{ translate('common.close') }}
+          </button>
+        </div>
+      </section>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div v-if="installRemediationModal.open" class="modal-backdrop">
+      <section class="modal-card surface-card" role="dialog" aria-modal="true" aria-labelledby="install-remediation-title">
+        <div class="section-header">
+          <div>
+            <p class="eyebrow">{{ translate('install.remediation.eyebrow') }}</p>
+            <h3 id="install-remediation-title">{{ installRemediationModal.title }}</h3>
+          </div>
+          <span class="status-chip" data-tone="active">
+            {{ translate('runtime.operationPhase.error') }}
+          </span>
+        </div>
+
+        <p class="supporting-text">{{ installRemediationModal.detail }}</p>
+
+        <div class="button-row button-row--end">
+          <button
+            v-if="installRemediationModal.supportUrlTarget"
+            class="ghost-button"
+            @click="openInstallRemediationSupportUrl"
+          >
+            {{ installRemediationModal.supportLabel }}
+          </button>
+          <button class="secondary-button" @click="closeInstallRemediationModal">
+            {{ translate('install.remediation.cancel') }}
+          </button>
+          <button class="primary-button" @click="confirmInstallRemediation">
+            {{ installRemediationModal.confirmLabel }}
           </button>
         </div>
       </section>

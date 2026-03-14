@@ -172,6 +172,30 @@ pub struct OperationResult {
     pub needs_elevation: bool,
     pub manual_url: String,
     pub follow_up: String,
+    #[serde(default)]
+    pub remediation: Option<OperationRemediation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationRemediation {
+    pub kind: OperationRemediationKind,
+    pub url_target: Option<SupportUrlTarget>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum OperationRemediationKind {
+    RequestElevation,
+    InstallHomebrew,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SupportUrlTarget {
+    #[serde(rename = "openclawManual")]
+    OpenClawManual,
+    #[serde(rename = "homebrewInstall")]
+    HomebrewInstall,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

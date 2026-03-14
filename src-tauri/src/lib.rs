@@ -64,6 +64,7 @@ pub fn run() {
             commands::get_operation_events,
             commands::stop_openclaw_operation,
             commands::open_manual_install,
+            commands::open_support_url,
             commands::save_profile,
             commands::save_ui_preferences,
             commands::test_connection,

@@ -104,6 +104,13 @@ export interface InstallRequest {
   allowElevation: boolean
 }
 
+export type SupportUrlTarget = 'openclawManual' | 'homebrewInstall'
+
+export interface OperationRemediation {
+  kind: 'requestElevation' | 'installHomebrew'
+  urlTarget: SupportUrlTarget | null
+}
+
 export interface OperationResult {
   kind: OperationKind
   strategy: string
@@ -114,6 +121,7 @@ export interface OperationResult {
   needsElevation: boolean
   manualUrl: string
   followUp: string
+  remediation?: OperationRemediation | null
 }
 
 export type OperationTaskPhase =
@@ -204,4 +212,15 @@ export interface ConnectionTestModalState {
   summary: string
   result: ConnectionTestResult | null
   steps: ConnectionTestModalStep[]
+}
+
+export interface InstallRemediationModalState {
+  open: boolean
+  kind: OperationRemediation['kind'] | null
+  actionKind: Extract<OperationKind, 'install' | 'update'> | null
+  title: string
+  detail: string
+  confirmLabel: string
+  supportLabel: string
+  supportUrlTarget: SupportUrlTarget | null
 }

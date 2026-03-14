@@ -84,6 +84,39 @@ pub fn official_install_plan_for_target(
     }
 }
 
+pub fn install_plans_for_target(
+    target: RuntimeTarget,
+    target_profile: &TargetProfile,
+    prefer_official: bool,
+    has_npm: bool,
+    has_pnpm: bool,
+) -> Vec<InstallPlan> {
+    let mut plans = Vec::new();
+    if prefer_official {
+        plans.push(official_install_plan_for_target(
+            target.clone(),
+            target_profile,
+        ));
+    }
+    plans.extend(fallback_install_plans_for_target(
+        target,
+        target_profile,
+        has_npm,
+        has_pnpm,
+    ));
+    plans
+}
+
+pub fn update_plans_for_target(
+    target: RuntimeTarget,
+    target_profile: &TargetProfile,
+    prefer_official: bool,
+    has_npm: bool,
+    has_pnpm: bool,
+) -> Vec<InstallPlan> {
+    install_plans_for_target(target, target_profile, prefer_official, has_npm, has_pnpm)
+}
+
 pub fn fallback_install_plans(has_npm: bool, has_pnpm: bool) -> Vec<InstallPlan> {
     let mut plans = Vec::new();
 
@@ -293,6 +326,18 @@ pub fn wsl_ensure_ssh_plan(target_profile: &TargetProfile) -> InstallPlan {
     )
 }
 
+pub fn macos_ensure_ssh_plan() -> InstallPlan {
+    InstallPlan {
+        strategy: "ensure-ssh",
+        program: "bash".into(),
+        args: vec![
+            "-lc".into(),
+            "brew install openssh".into(),
+        ],
+        envs: Vec::new(),
+    }
+}
+
 pub fn wsl_openclaw_install_plan(target_profile: &TargetProfile) -> InstallPlan {
     wsl_shell_plan(
         "official",
@@ -416,9 +461,10 @@ fn sh_quote(input: &str) -> String {
 mod tests {
     use super::{
         compare_versions, default_runtime_target, fallback_install_plans,
-        looks_like_permission_error, official_install_plan, Platform,
+        install_plans_for_target, looks_like_permission_error, macos_ensure_ssh_plan,
+        official_install_plan, update_plans_for_target, Platform,
     };
-    use crate::types::RuntimeTarget;
+    use crate::types::{RuntimeTarget, TargetProfile};
 
     #[test]
     fn macos_official_plan_uses_install_sh() {
@@ -449,6 +495,43 @@ mod tests {
         let strategies = plans.iter().map(|plan| plan.strategy).collect::<Vec<_>>();
 
         assert_eq!(strategies, vec!["npm", "pnpm"]);
+    }
+
+    #[test]
+    fn macos_ensure_ssh_plan_uses_homebrew() {
+        let plan = macos_ensure_ssh_plan();
+
+        assert_eq!(plan.strategy, "ensure-ssh");
+        assert_eq!(plan.program, "bash");
+        assert!(plan.args.join(" ").contains("brew install openssh"));
+    }
+
+    #[test]
+    fn install_plans_keep_official_installer_first() {
+        let plans = install_plans_for_target(
+            RuntimeTarget::MacNative,
+            &TargetProfile::default(),
+            true,
+            true,
+            true,
+        );
+        let strategies = plans.iter().map(|plan| plan.strategy).collect::<Vec<_>>();
+
+        assert_eq!(strategies, vec!["official", "npm", "pnpm"]);
+    }
+
+    #[test]
+    fn update_plans_keep_official_installer_first() {
+        let plans = update_plans_for_target(
+            RuntimeTarget::MacNative,
+            &TargetProfile::default(),
+            true,
+            true,
+            true,
+        );
+        let strategies = plans.iter().map(|plan| plan.strategy).collect::<Vec<_>>();
+
+        assert_eq!(strategies, vec!["official", "npm", "pnpm"]);
     }
 
     #[test]

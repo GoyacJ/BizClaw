@@ -284,6 +284,7 @@ mod tests {
             needs_elevation: false,
             manual_url: "https://docs.openclaw.ai/install".into(),
             follow_up: follow_up.into(),
+            remediation: None,
         }
     }
 

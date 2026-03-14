@@ -126,10 +126,12 @@ vi.mock('@/lib/use-app-model', () => {
       canTestConnection: ref(true),
       checkForUpdates: vi.fn(),
       closeConnectionTestModal: vi.fn(),
+      closeInstallRemediationModal: vi.fn(),
       connectionTestBusy: ref(false),
       connectionTestDisabledReason: ref<string | null>(null),
       connectionTestCloseDisabled: ref(false),
       connectionTestModal,
+      confirmInstallRemediation: vi.fn(),
       companyProfile: reactive({
         sshHost: 'gateway.example.com',
         sshUser: 'bizclaw',
@@ -142,8 +144,19 @@ vi.mock('@/lib/use-app-model', () => {
       environment,
       installCli: vi.fn(),
       installBusyAction: ref<string | null>(null),
+      installRemediationModal: reactive({
+        open: false,
+        kind: null,
+        actionKind: null,
+        title: '',
+        detail: '',
+        confirmLabel: '',
+        supportLabel: '',
+        supportUrlTarget: null,
+      }),
       launchManualInstall: vi.fn(),
       manualInstallBusy: ref(false),
+      openInstallRemediationSupportUrl: vi.fn(),
       logs: ref([
         {
           source: 'system',

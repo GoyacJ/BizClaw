@@ -3,8 +3,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { EnvironmentSnapshot, OperationTaskSnapshot } from '@/types'
 
+const mockUiPreferences = {
+  theme: 'light' as const,
+  locale: 'zh-CN' as const,
+}
+
 vi.mock('@/lib/runtime-view', () => ({
   operationStepLabel: (step: string) => step,
+  operationTaskPhaseLabel: (phase: string) => phase,
   phaseLabel: (phase: string) => phase,
 }))
 
@@ -21,6 +27,10 @@ vi.mock('@/lib/use-app-model', () => {
     hasSavedProfile: true,
     tokenStatus: 'saved',
     tokenStatusMessage: null,
+    uiPreferences: {
+      theme: 'light',
+      locale: 'zh-CN',
+    },
     savedSettings: {
       companyProfile: {
         sshHost: 'gateway.example.com',
@@ -203,6 +213,8 @@ vi.mock('@/lib/use-app-model', () => {
       ]),
       stopHostedRuntime: vi.fn(),
       stopOperation: vi.fn(),
+      setLocale: vi.fn(),
+      setTheme: vi.fn(),
       targetProfile: reactive({
         wslDistro: 'Ubuntu',
       }),
@@ -211,6 +223,10 @@ vi.mock('@/lib/use-app-model', () => {
       gatewayStateTone: ref('neutral'),
       tokenStateLabel: ref('Token 已保存'),
       tokenStateToneValue: ref('success'),
+      uiPreferences: ref({
+        theme: mockUiPreferences.theme,
+        locale: mockUiPreferences.locale,
+      }),
       updateCli: vi.fn(),
       userProfile: reactive({
         displayName: 'BizClaw',
@@ -230,6 +246,8 @@ describe('App operations center', () => {
     host?.remove()
     host = null
     app = null
+    mockUiPreferences.theme = 'light'
+    mockUiPreferences.locale = 'zh-CN'
   })
 
   it('renders the compact sidebar navigation shell', async () => {
@@ -247,7 +265,7 @@ describe('App operations center', () => {
       node.textContent?.trim(),
     )
 
-    expect(navButtons).toEqual(['概览', '安装与更新', '连接与配置', '运行日志'])
+    expect(navButtons).toEqual(['概览', '安装与更新', '连接与配置', '运行日志', '设置'])
     expect(host.textContent).toContain('BIZCLAW')
     expect(host.textContent).not.toContain('操作中心')
     expect(host.textContent).not.toContain('macOS 本机')
@@ -317,7 +335,7 @@ describe('App operations center', () => {
     expect(host.textContent).toContain('停止')
   })
 
-  it('renders a dedicated BizClaw update card on the install page', async () => {
+  it('keeps BizClaw app updates out of the install page', async () => {
     const { default: App } = await import('./App.vue')
 
     host = document.createElement('div')
@@ -332,11 +350,33 @@ describe('App operations center', () => {
     button?.click()
     await nextTick()
 
-    expect(host.textContent).toContain('BizClaw 应用更新')
+    expect(host.textContent).not.toContain('BizClaw 应用更新')
+    expect(host.textContent).not.toContain('当前 BizClaw 版本')
+    expect(host.textContent).not.toContain('最新 BizClaw 版本')
+    expect(host.textContent).not.toContain('立即更新')
+  })
+
+  it('renders theme, locale, and BizClaw version controls on the settings page', async () => {
+    const { default: App } = await import('./App.vue')
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+
+    app = createApp(App)
+    app.mount(host)
+    await nextTick()
+
+    const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+      .find((node) => node.textContent?.includes('设置'))
+    button?.click()
+    await nextTick()
+
+    expect(host.textContent).toContain('主题')
+    expect(host.textContent).toContain('国际化')
+    expect(host.textContent).toContain('版本')
+    expect(host.textContent).toContain('跟随系统')
     expect(host.textContent).toContain('当前 BizClaw 版本')
     expect(host.textContent).toContain('最新 BizClaw 版本')
-    expect(host.textContent).toContain('0.1.8')
-    expect(host.textContent).toContain('0.1.9')
     expect(host.textContent).toContain('立即更新')
   })
 

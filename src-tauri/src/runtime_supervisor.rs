@@ -18,7 +18,10 @@ use crate::{
         build_wsl_ssh_command, CommandSpec,
     },
     runtime_state::RuntimeModel,
-    types::{CompanyProfile, LogEntry, RuntimeStatus, RuntimeTarget, TargetProfile, UserProfile},
+    types::{
+        CompanyProfile, LocalePreference, LogEntry, RuntimeStatus, RuntimeTarget, TargetProfile,
+        UserProfile,
+    },
 };
 
 const LOG_LIMIT: usize = 400;
@@ -27,6 +30,22 @@ const SSH_TUNNEL_READY_TIMEOUT: Duration = Duration::from_secs(6);
 const SSH_TUNNEL_POLL_INTERVAL: Duration = Duration::from_millis(150);
 const DEFAULT_NODE_BOOT_WAIT: Duration = Duration::from_secs(1);
 const WINDOWS_NODE_BOOT_WAIT: Duration = Duration::from_secs(4);
+
+fn locale_text(locale: LocalePreference, zh: &'static str, en: &'static str) -> &'static str {
+    if matches!(locale, LocalePreference::EnUs) {
+        en
+    } else {
+        zh
+    }
+}
+
+fn locale_owned(locale: LocalePreference, zh: impl Into<String>, en: impl Into<String>) -> String {
+    if matches!(locale, LocalePreference::EnUs) {
+        en.into()
+    } else {
+        zh.into()
+    }
+}
 
 #[derive(Default)]
 pub struct RuntimeSupervisor {
@@ -63,6 +82,7 @@ pub fn mark_configured(state: &SharedRuntimeState, app: &AppHandle) {
 pub fn start_runtime_processes(
     state: SharedRuntimeState,
     app: AppHandle,
+    locale: LocalePreference,
     runtime_target: RuntimeTarget,
     target_profile: &TargetProfile,
     company_profile: &CompanyProfile,
@@ -70,7 +90,7 @@ pub fn start_runtime_processes(
     token: &str,
     ssh_password: Option<&str>,
 ) -> Result<RuntimeStatus> {
-    stop_runtime_processes(state.clone(), app.clone()).ok();
+    stop_runtime_processes(state.clone(), app.clone(), locale).ok();
 
     {
         let mut guard = state.lock().expect("runtime mutex poisoned");
@@ -83,17 +103,26 @@ pub fn start_runtime_processes(
         &app,
         "system",
         "info",
-        format!("准备建立到 {} 的 SSH 隧道", company_profile.ssh_host),
+        locale_owned(
+            locale,
+            format!("准备建立到 {} 的 SSH 隧道", company_profile.ssh_host),
+            format!("Preparing an SSH tunnel to {}", company_profile.ssh_host),
+        ),
     );
 
     let result: Result<RuntimeStatus> = (|| {
         let ssh_command = build_runtime_ssh_command(
+            locale,
             runtime_target.clone(),
             target_profile,
             company_profile,
             ssh_password,
         )?;
-        let mut ssh_child = spawn_command(&ssh_command).context("无法启动 SSH 隧道")?;
+        let mut ssh_child = spawn_command(&ssh_command, locale).context(locale_text(
+            locale,
+            "无法启动 SSH 隧道",
+            "Failed to start the SSH tunnel",
+        ))?;
         attach_child_logs(
             &app,
             &state,
@@ -107,24 +136,35 @@ pub fn start_runtime_processes(
         }
 
         thread::sleep(SSH_BOOT_WAIT);
-        ensure_process_alive(&state, &app, ManagedProcess::Ssh)?;
-        wait_for_ssh_tunnel(&state, &app, company_profile.local_port)?;
+        ensure_process_alive(&state, &app, locale, ManagedProcess::Ssh)?;
+        wait_for_ssh_tunnel(&state, &app, locale, company_profile.local_port)?;
 
         append_log(
             &state,
             &app,
             "system",
             "info",
-            "SSH 隧道已建立，正在启动 OpenClaw Node",
+            locale_text(
+                locale,
+                "SSH 隧道已建立，正在启动 OpenClaw Node",
+                "SSH tunnel established. Starting OpenClaw Node",
+            ),
         );
-        let mut node_child = spawn_command(&build_runtime_openclaw_command(
-            runtime_target.clone(),
-            target_profile,
-            company_profile,
-            user_profile,
-            token,
-        ))
-        .context("无法启动 OpenClaw Node")?;
+        let mut node_child = spawn_command(
+            &build_runtime_openclaw_command(
+                runtime_target.clone(),
+                target_profile,
+                company_profile,
+                user_profile,
+                token,
+            ),
+            locale,
+        )
+        .context(locale_text(
+            locale,
+            "无法启动 OpenClaw Node",
+            "Failed to start OpenClaw Node",
+        ))?;
         attach_child_logs(
             &app,
             &state,
@@ -137,7 +177,7 @@ pub fn start_runtime_processes(
             guard.node_child = Some(node_child);
         }
 
-        wait_for_node_process(&state, &app, runtime_target)?;
+        wait_for_node_process(&state, &app, locale, runtime_target)?;
 
         {
             let mut guard = state.lock().expect("runtime mutex poisoned");
@@ -149,7 +189,11 @@ pub fn start_runtime_processes(
             &app,
             "system",
             "info",
-            "OpenClaw Node 已连接到公司网关。",
+            locale_text(
+                locale,
+                "OpenClaw Node 已连接到公司网关。",
+                "OpenClaw Node is connected to the company gateway.",
+            ),
         );
 
         Ok(snapshot_status(&state))
@@ -160,7 +204,7 @@ pub fn start_runtime_processes(
             snapshot_status(&state).phase,
             crate::types::RuntimePhase::Error
         );
-        cleanup_processes(&state);
+        cleanup_processes(&state, locale);
         if needs_state_update {
             mark_runtime_error(&state, &app, &error.to_string());
         }
@@ -170,6 +214,7 @@ pub fn start_runtime_processes(
 }
 
 fn build_runtime_ssh_command(
+    locale: LocalePreference,
     runtime_target: RuntimeTarget,
     target_profile: &TargetProfile,
     company_profile: &CompanyProfile,
@@ -178,8 +223,11 @@ fn build_runtime_ssh_command(
     match runtime_target {
         RuntimeTarget::MacNative => {
             if let Some(password) = ssh_password {
-                let askpass_program =
-                    std::env::current_exe().context("无法定位 SSH 密码辅助程序")?;
+                let askpass_program = std::env::current_exe().context(locale_text(
+                    locale,
+                    "无法定位 SSH 密码辅助程序",
+                    "Failed to locate the SSH password helper",
+                ))?;
                 return Ok(build_native_ssh_command(
                     company_profile,
                     Some((askpass_program.to_string_lossy().as_ref(), password)),
@@ -213,14 +261,28 @@ fn build_runtime_openclaw_command(
     }
 }
 
-pub fn stop_runtime_processes(state: SharedRuntimeState, app: AppHandle) -> Result<RuntimeStatus> {
+pub fn stop_runtime_processes(
+    state: SharedRuntimeState,
+    app: AppHandle,
+    locale: LocalePreference,
+) -> Result<RuntimeStatus> {
     let mut node_child = {
         let mut guard = state.lock().expect("runtime mutex poisoned");
         guard.node_child.take()
     };
     if let Some(child) = node_child.as_mut() {
-        kill_child(child, "OpenClaw Node")?;
-        append_log(&state, &app, "system", "info", "OpenClaw Node 已停止。");
+        kill_child(
+            child,
+            locale,
+            locale_text(locale, "OpenClaw Node", "OpenClaw Node"),
+        )?;
+        append_log(
+            &state,
+            &app,
+            "system",
+            "info",
+            locale_text(locale, "OpenClaw Node 已停止。", "OpenClaw Node stopped."),
+        );
     }
 
     let mut ssh_child = {
@@ -228,8 +290,14 @@ pub fn stop_runtime_processes(state: SharedRuntimeState, app: AppHandle) -> Resu
         guard.ssh_child.take()
     };
     if let Some(child) = ssh_child.as_mut() {
-        kill_child(child, "SSH 隧道")?;
-        append_log(&state, &app, "system", "info", "SSH 隧道已关闭。");
+        kill_child(child, locale, locale_text(locale, "SSH 隧道", "SSH tunnel"))?;
+        append_log(
+            &state,
+            &app,
+            "system",
+            "info",
+            locale_text(locale, "SSH 隧道已关闭。", "SSH tunnel closed."),
+        );
     }
 
     {
@@ -241,7 +309,7 @@ pub fn stop_runtime_processes(state: SharedRuntimeState, app: AppHandle) -> Resu
     Ok(snapshot_status(&state))
 }
 
-fn spawn_command(spec: &CommandSpec) -> Result<Child> {
+fn spawn_command(spec: &CommandSpec, locale: LocalePreference) -> Result<Child> {
     let mut command = Command::new(&spec.program);
     command.args(&spec.args);
     command.stdin(Stdio::null());
@@ -249,9 +317,13 @@ fn spawn_command(spec: &CommandSpec) -> Result<Child> {
     for (key, value) in &spec.envs {
         command.env(key, value);
     }
-    command
-        .spawn()
-        .with_context(|| format!("启动命令失败: {}", spec.program))
+    command.spawn().with_context(|| {
+        format!(
+            "{}: {}",
+            locale_text(locale, "启动命令失败", "Failed to start command"),
+            spec.program
+        )
+    })
 }
 
 fn attach_child_logs(
@@ -293,6 +365,7 @@ fn spawn_log_reader(
 fn ensure_process_alive(
     state: &SharedRuntimeState,
     app: &AppHandle,
+    locale: LocalePreference,
     process: ManagedProcess,
 ) -> Result<()> {
     let exited = {
@@ -304,7 +377,11 @@ fn ensure_process_alive(
     };
 
     if let Some(status) = exited {
-        let detail = format!("{} 退出，状态码: {}", process.label(), status);
+        let detail = locale_owned(
+            locale,
+            format!("{} 退出，状态码: {}", process.label(locale), status),
+            format!("{} exited with status {}", process.label(locale), status),
+        );
         mark_runtime_error(state, app, &detail);
         let recent = recent_logs(state);
         return Err(anyhow!("{}\n{}", detail, recent));
@@ -313,15 +390,24 @@ fn ensure_process_alive(
     Ok(())
 }
 
-fn kill_child(child: &mut Child, label: &str) -> Result<()> {
-    child
-        .kill()
-        .with_context(|| format!("结束 {} 进程失败", label))?;
+fn kill_child(child: &mut Child, locale: LocalePreference, label: &str) -> Result<()> {
+    child.kill().with_context(|| {
+        locale_owned(
+            locale,
+            format!("结束 {} 进程失败", label),
+            format!("Failed to stop the {} process", label),
+        )
+    })?;
     let _ = child.wait();
     Ok(())
 }
 
-fn wait_for_ssh_tunnel(state: &SharedRuntimeState, app: &AppHandle, local_port: u16) -> Result<()> {
+fn wait_for_ssh_tunnel(
+    state: &SharedRuntimeState,
+    app: &AppHandle,
+    locale: LocalePreference,
+    local_port: u16,
+) -> Result<()> {
     let started = std::time::Instant::now();
 
     loop {
@@ -329,19 +415,27 @@ fn wait_for_ssh_tunnel(state: &SharedRuntimeState, app: &AppHandle, local_port: 
             local_port,
             SSH_TUNNEL_POLL_INTERVAL,
             SSH_TUNNEL_POLL_INTERVAL,
+            locale,
         )
         .is_ok()
         {
             return Ok(());
         }
 
-        ensure_process_alive(state, app, ManagedProcess::Ssh)?;
+        ensure_process_alive(state, app, locale, ManagedProcess::Ssh)?;
 
         if started.elapsed() >= SSH_TUNNEL_READY_TIMEOUT {
-            cleanup_processes(state);
-            let detail = format!(
-                "SSH 本地端口 {} 未就绪，请检查 SSH 登录和端口转发配置",
-                local_port
+            cleanup_processes(state, locale);
+            let detail = locale_owned(
+                locale,
+                format!(
+                    "SSH 本地端口 {} 未就绪，请检查 SSH 登录和端口转发配置",
+                    local_port
+                ),
+                format!(
+                    "Local SSH port {} is not ready. Check the SSH credentials and port forwarding settings.",
+                    local_port
+                ),
             );
             mark_runtime_error(state, app, &detail);
             let recent = recent_logs(state);
@@ -352,17 +446,21 @@ fn wait_for_ssh_tunnel(state: &SharedRuntimeState, app: &AppHandle, local_port: 
     }
 }
 
-fn cleanup_processes(state: &SharedRuntimeState) {
+fn cleanup_processes(state: &SharedRuntimeState, locale: LocalePreference) {
     let (mut ssh_child, mut node_child) = {
         let mut guard = state.lock().expect("runtime mutex poisoned");
         (guard.ssh_child.take(), guard.node_child.take())
     };
 
     if let Some(child) = node_child.as_mut() {
-        let _ = kill_child(child, "OpenClaw Node");
+        let _ = kill_child(
+            child,
+            locale,
+            locale_text(locale, "OpenClaw Node", "OpenClaw Node"),
+        );
     }
     if let Some(child) = ssh_child.as_mut() {
-        let _ = kill_child(child, "SSH 隧道");
+        let _ = kill_child(child, locale, locale_text(locale, "SSH 隧道", "SSH tunnel"));
     }
 }
 
@@ -375,7 +473,12 @@ fn mark_runtime_error(state: &SharedRuntimeState, app: &AppHandle, message: &str
     append_log(state, app, "system", "error", message.to_string());
 }
 
-fn wait_for_local_port(port: u16, max_wait: Duration, poll_interval: Duration) -> Result<()> {
+fn wait_for_local_port(
+    port: u16,
+    max_wait: Duration,
+    poll_interval: Duration,
+    locale: LocalePreference,
+) -> Result<()> {
     let started = std::time::Instant::now();
     let address = SocketAddr::from(([127, 0, 0, 1], port));
 
@@ -383,7 +486,14 @@ fn wait_for_local_port(port: u16, max_wait: Duration, poll_interval: Duration) -
         match TcpStream::connect_timeout(&address, poll_interval) {
             Ok(_) => return Ok(()),
             Err(error) if started.elapsed() >= max_wait => {
-                return Err(anyhow!("本地 SSH 隧道端口 {} 未就绪: {}", port, error));
+                return Err(anyhow!(
+                    "{}",
+                    locale_owned(
+                        locale,
+                        format!("本地 SSH 隧道端口 {} 未就绪: {}", port, error),
+                        format!("Local SSH tunnel port {} is not ready: {}", port, error),
+                    )
+                ));
             }
             Err(_) => thread::sleep(poll_interval),
         }
@@ -393,13 +503,14 @@ fn wait_for_local_port(port: u16, max_wait: Duration, poll_interval: Duration) -
 fn wait_for_node_process(
     state: &SharedRuntimeState,
     app: &AppHandle,
+    locale: LocalePreference,
     runtime_target: RuntimeTarget,
 ) -> Result<()> {
     let started = std::time::Instant::now();
     let boot_wait = node_boot_wait(runtime_target);
 
     loop {
-        ensure_process_alive(state, app, ManagedProcess::OpenClaw)?;
+        ensure_process_alive(state, app, locale, ManagedProcess::OpenClaw)?;
 
         if started.elapsed() >= boot_wait {
             return Ok(());
@@ -474,10 +585,10 @@ enum ManagedProcess {
 }
 
 impl ManagedProcess {
-    fn label(&self) -> &'static str {
+    fn label(&self, locale: LocalePreference) -> &'static str {
         match self {
-            Self::Ssh => "SSH 隧道",
-            Self::OpenClaw => "OpenClaw Node",
+            Self::Ssh => locale_text(locale, "SSH 隧道", "SSH tunnel"),
+            Self::OpenClaw => locale_text(locale, "OpenClaw Node", "OpenClaw Node"),
         }
     }
 
@@ -494,26 +605,35 @@ mod tests {
     use std::{net::TcpListener, thread, time::Duration};
 
     use super::{node_boot_wait_for_target, wait_for_local_port};
-    use crate::types::RuntimeTarget;
+    use crate::types::{LocalePreference, RuntimeTarget};
 
     #[test]
     fn waits_until_local_port_becomes_available() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
 
-        assert!(
-            wait_for_local_port(port, Duration::from_millis(50), Duration::from_millis(10)).is_ok()
-        );
+        assert!(wait_for_local_port(
+            port,
+            Duration::from_millis(50),
+            Duration::from_millis(10),
+            LocalePreference::ZhCn,
+        )
+        .is_ok());
     }
 
     #[test]
     fn times_out_when_local_port_never_opens() {
         let port = unused_local_port();
 
-        let error = wait_for_local_port(port, Duration::from_millis(80), Duration::from_millis(20))
-            .unwrap_err();
+        let error = wait_for_local_port(
+            port,
+            Duration::from_millis(80),
+            Duration::from_millis(20),
+            LocalePreference::EnUs,
+        )
+        .unwrap_err();
 
-        assert!(error.to_string().contains("本地 SSH 隧道端口"));
+        assert!(error.to_string().contains("Local SSH tunnel port"));
     }
 
     #[test]

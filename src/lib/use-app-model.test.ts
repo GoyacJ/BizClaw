@@ -15,6 +15,8 @@ const apiMocks = vi.hoisted(() => ({
   onOperationEvent: vi.fn(),
   onConnectionTestEvent: vi.fn(),
   onRefreshRequested: vi.fn(),
+  saveProfile: vi.fn(),
+  saveUiPreferences: vi.fn(),
 }))
 
 const bizclawUpdaterMocks = vi.hoisted(() => ({
@@ -39,7 +41,8 @@ vi.mock('@/lib/api', () => ({
   onRuntimeLog: apiMocks.onRuntimeLog,
   onRuntimeStatus: apiMocks.onRuntimeStatus,
   openManualInstall: vi.fn(),
-  saveProfile: vi.fn(),
+  saveProfile: apiMocks.saveProfile,
+  saveUiPreferences: apiMocks.saveUiPreferences,
   startRuntime: vi.fn(),
   stopOpenClawOperation: vi.fn(),
   stopRuntime: vi.fn(),
@@ -58,12 +61,16 @@ vi.mock('@/lib/bizclaw-updater', () => ({
 describe('useAppModel', () => {
   let host: HTMLDivElement | null = null
   let app: ReturnType<typeof createApp> | null = null
+  const originalMatchMedia = window.matchMedia
 
   afterEach(() => {
     app?.unmount()
     host?.remove()
     host = null
     app = null
+    document.documentElement.dataset.theme = ''
+    document.documentElement.style.colorScheme = ''
+    window.matchMedia = originalMatchMedia
     vi.clearAllMocks()
   })
 
@@ -174,6 +181,259 @@ describe('useAppModel', () => {
     expect(model.bizclawUpdateActionLabel.value).toBe('已加载当前版本')
   })
 
+  it('hydrates ui preferences from the environment and persists locale changes', async () => {
+    apiMocks.detectEnvironment
+      .mockResolvedValueOnce(createSnapshot({
+        uiPreferences: {
+          theme: 'dark',
+          locale: 'en-US',
+        },
+      }))
+      .mockResolvedValue(createSnapshot({
+        uiPreferences: {
+          theme: 'dark',
+          locale: 'zh-CN',
+        },
+      }))
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.saveUiPreferences.mockResolvedValue({
+      theme: 'dark',
+      locale: 'zh-CN',
+    })
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+
+    expect(model.uiPreferences.value).toEqual({
+      theme: 'dark',
+      locale: 'en-US',
+    })
+    expect(model.tokenStateLabel.value).toBe('Token saved')
+
+    await model.setLocale('zh-CN')
+    await flushPromises()
+
+    expect(apiMocks.saveUiPreferences).toHaveBeenCalledWith({
+      theme: 'dark',
+      locale: 'zh-CN',
+    })
+    expect(model.uiPreferences.value.locale).toBe('zh-CN')
+    expect(model.tokenStateLabel.value).toBe('Token 已保存')
+  })
+
+  it('applies and tracks the system theme when the preference is set to system', async () => {
+    const mediaQuery = createMatchMediaMock(true)
+    window.matchMedia = vi.fn().mockImplementation((query: string) => {
+      expect(query).toBe('(prefers-color-scheme: dark)')
+      return mediaQuery
+    })
+
+    apiMocks.detectEnvironment.mockResolvedValue(createSnapshot({
+      uiPreferences: {
+        theme: 'system',
+        locale: 'zh-CN',
+      },
+    }))
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.saveUiPreferences.mockImplementation(async (preferences) => preferences)
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+
+    expect(model.uiPreferences.value.theme).toBe('system')
+    expect(document.documentElement.dataset.theme).toBe('dark')
+    expect(document.documentElement.style.colorScheme).toBe('dark')
+
+    mediaQuery.setMatches(false)
+    await flushPromises()
+
+    expect(document.documentElement.dataset.theme).toBe('light')
+    expect(document.documentElement.style.colorScheme).toBe('light')
+
+    await model.setTheme('light')
+    await flushPromises()
+
+    mediaQuery.setMatches(true)
+    await flushPromises()
+
+    expect(apiMocks.saveUiPreferences).toHaveBeenCalledWith({
+      theme: 'light',
+      locale: 'zh-CN',
+    })
+    expect(document.documentElement.dataset.theme).toBe('light')
+  })
+
+  it('keeps english locale after saving and refreshing localized state', async () => {
+    apiMocks.detectEnvironment
+      .mockResolvedValueOnce(createSnapshot({
+        uiPreferences: {
+          theme: 'light',
+          locale: 'zh-CN',
+        },
+      }))
+      .mockResolvedValue(createSnapshot({
+        uiPreferences: {
+          theme: 'light',
+          locale: 'en-US',
+        },
+      }))
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.saveUiPreferences.mockResolvedValue({
+      theme: 'light',
+      locale: 'en-US',
+    })
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+    await model.setLocale('en-US')
+    await flushPromises()
+
+    expect(model.uiPreferences.value.locale).toBe('en-US')
+    expect(model.tokenStateLabel.value).toBe('Token saved')
+    expect(apiMocks.detectEnvironment).toHaveBeenCalledTimes(2)
+    expect(apiMocks.streamLogs).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getOperationStatus).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getOperationEvents).toHaveBeenCalledTimes(1)
+  })
+
+  it('refreshes saved environment without reloading logs or operation history after save only', async () => {
+    apiMocks.detectEnvironment
+      .mockResolvedValueOnce(createSnapshot({
+        savedSettings: null,
+      }))
+      .mockResolvedValue(createSnapshot({
+        savedSettings: {
+          companyProfile: {
+            sshHost: 'gateway.example.com',
+            sshUser: 'bizclaw',
+            localPort: 18889,
+            remoteBindHost: '127.0.0.1',
+            remoteBindPort: 18789,
+          },
+          userProfile: {
+            displayName: 'BizClaw',
+            autoConnect: true,
+            runInBackground: true,
+          },
+          targetProfile: {
+            wslDistro: 'Ubuntu',
+          },
+        },
+      }))
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.saveProfile.mockResolvedValue({
+      companyProfile: {
+        sshHost: 'gateway.example.com',
+        sshUser: 'bizclaw',
+        localPort: 18889,
+        remoteBindHost: '127.0.0.1',
+        remoteBindPort: 18789,
+      },
+      userProfile: {
+        displayName: 'BizClaw',
+        autoConnect: true,
+        runInBackground: true,
+      },
+      targetProfile: {
+        wslDistro: 'Ubuntu',
+      },
+    })
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+    await model.saveOnly()
+    await flushPromises()
+
+    expect(apiMocks.detectEnvironment).toHaveBeenCalledTimes(2)
+    expect(apiMocks.streamLogs).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getOperationStatus).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getOperationEvents).toHaveBeenCalledTimes(1)
+  })
+
   it('checks for BizClaw updates only when requested and exposes the available release', async () => {
     apiMocks.detectEnvironment.mockResolvedValue(createSnapshot())
     apiMocks.streamLogs.mockResolvedValue([])
@@ -215,6 +475,42 @@ describe('useAppModel', () => {
     expect(model.bizclawUpdate.value.currentVersion).toBe('0.1.8')
     expect(model.bizclawUpdate.value.latestVersion).toBe('0.1.9')
     expect(model.bizclawUpdate.value.releaseNotes).toBe('Bug fixes')
+  })
+
+  it('keeps the current section when checking BizClaw updates from settings', async () => {
+    apiMocks.detectEnvironment.mockResolvedValue(createSnapshot())
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    bizclawUpdaterMocks.checkForBizClawUpdate.mockResolvedValue(null)
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+    model.activeSection.value = 'settings'
+
+    await model.checkBizClawUpdates()
+    await flushPromises()
+
+    expect(model.activeSection.value).toBe('settings')
   })
 
   it('shows an actionable BizClaw updater error when the release manifest is missing', async () => {
@@ -318,7 +614,7 @@ async function flushPromises() {
   }
 }
 
-function createSnapshot(): EnvironmentSnapshot {
+function createSnapshot(overrides: Partial<EnvironmentSnapshot> = {}): EnvironmentSnapshot {
   return {
     os: 'macos',
     runtimeTarget: 'macNative',
@@ -331,6 +627,10 @@ function createSnapshot(): EnvironmentSnapshot {
     hasSavedProfile: true,
     tokenStatus: 'saved',
     tokenStatusMessage: null,
+    uiPreferences: {
+      theme: 'light',
+      locale: 'zh-CN',
+    },
     savedSettings: null,
     runtimeStatus: {
       phase: 'configured',
@@ -341,6 +641,7 @@ function createSnapshot(): EnvironmentSnapshot {
     },
     installRecommendation: 'test',
     wslStatus: null,
+    ...overrides,
   }
 }
 
@@ -354,4 +655,51 @@ function createIdleTask(): OperationTaskSnapshot {
     startedAt: null,
     endedAt: null,
   }
+}
+
+function createMatchMediaMock(initialMatches: boolean) {
+  let matches = initialMatches
+  type MatchMediaListener = EventListenerOrEventListenerObject | ((event: MediaQueryListEvent) => void)
+  const listeners = new Set<MatchMediaListener>()
+
+  const notifyListener = (listener: MatchMediaListener, event: MediaQueryListEvent) => {
+    if (typeof listener === 'function') {
+      listener(event)
+      return
+    }
+
+    listener.handleEvent(event)
+  }
+
+  return {
+    get matches() {
+      return matches
+    },
+    media: '(prefers-color-scheme: dark)',
+    onchange: null,
+    addEventListener: vi.fn((_type: string, listener: EventListenerOrEventListenerObject) => {
+      listeners.add(listener)
+    }),
+    removeEventListener: vi.fn((_type: string, listener: EventListenerOrEventListenerObject) => {
+      listeners.delete(listener)
+    }),
+    addListener: vi.fn((listener: ((event: MediaQueryListEvent) => void) | null) => {
+      if (listener) {
+        listeners.add(listener)
+      }
+    }),
+    removeListener: vi.fn((listener: ((event: MediaQueryListEvent) => void) | null) => {
+      if (listener) {
+        listeners.delete(listener)
+      }
+    }),
+    dispatchEvent: vi.fn(() => true),
+    setMatches(nextMatches: boolean) {
+      matches = nextMatches
+      const event = { matches, media: '(prefers-color-scheme: dark)' } as MediaQueryListEvent
+      for (const listener of listeners) {
+        notifyListener(listener, event)
+      }
+    },
+  } satisfies MediaQueryList & { setMatches: (nextMatches: boolean) => void }
 }

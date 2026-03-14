@@ -3,7 +3,9 @@ use tauri::{
     AppHandle, Emitter, Manager, Runtime, Wry,
 };
 
-use crate::types::{EnvironmentSnapshot, OperationTaskPhase, OperationTaskSnapshot, TokenStatus};
+use crate::types::{
+    EnvironmentSnapshot, LocalePreference, OperationTaskPhase, OperationTaskSnapshot, TokenStatus,
+};
 
 pub const MENU_SHOW_ID: &str = "show";
 pub const MENU_REFRESH_ID: &str = "refresh";
@@ -14,8 +16,7 @@ const MENU_STATUS_OPENCLAW_ID: &str = "status-openclaw";
 const MENU_STATUS_GATEWAY_ID: &str = "status-gateway";
 const MENU_STATUS_SSH_ID: &str = "status-ssh";
 const MENU_STATUS_TOKEN_ID: &str = "status-token";
-const TRAY_MENU_ACTIONS: [(&str, &str); 2] =
-    [(MENU_SHOW_ID, "打开控制台"), (MENU_QUIT_ID, "退出")];
+const TRAY_MENU_ACTIONS: [(&str, &str); 2] = [(MENU_SHOW_ID, "打开控制台"), (MENU_QUIT_ID, "退出")];
 
 #[derive(Clone)]
 pub struct AppMenuState<R: Runtime = Wry> {
@@ -126,20 +127,24 @@ fn build_status_menu_item<R: Runtime>(
     id: &str,
     text: &str,
 ) -> tauri::Result<MenuItem<R>> {
-    MenuItemBuilder::with_id(id, text)
-        .enabled(false)
-        .build(app)
+    MenuItemBuilder::with_id(id, text).enabled(false).build(app)
 }
 
 fn status_menu_labels(
     environment: Option<&EnvironmentSnapshot>,
     operation: Option<&OperationTaskSnapshot>,
 ) -> StatusMenuLabels {
+    let locale = environment
+        .map(|snapshot| snapshot.ui_preferences.locale)
+        .unwrap_or_default();
     StatusMenuLabels {
-        openclaw: format!("OpenClaw: {}", openclaw_label(environment, operation)),
-        gateway: format!("Gateway: {}", gateway_label(environment)),
-        ssh: format!("SSH: {}", ssh_label(environment)),
-        token: format!("Token: {}", token_label(environment)),
+        openclaw: format!(
+            "OpenClaw: {}",
+            openclaw_label(locale, environment, operation)
+        ),
+        gateway: format!("Gateway: {}", gateway_label(locale, environment)),
+        ssh: format!("SSH: {}", ssh_label(locale, environment)),
+        token: format!("Token: {}", token_label(locale, environment)),
     }
 }
 
@@ -152,18 +157,21 @@ struct StatusMenuLabels {
 }
 
 fn openclaw_label(
+    locale: LocalePreference,
     environment: Option<&EnvironmentSnapshot>,
     operation: Option<&OperationTaskSnapshot>,
 ) -> String {
     if let Some(task) = operation {
         match (task.phase, task.kind) {
             (OperationTaskPhase::Running, Some(crate::types::OperationKind::Install)) => {
-                return "安装中".into()
+                return locale_text(locale, "安装中", "Installing").into()
             }
             (OperationTaskPhase::Running, Some(crate::types::OperationKind::Update)) => {
-                return "更新中".into()
+                return locale_text(locale, "更新中", "Updating").into()
             }
-            (OperationTaskPhase::Cancelling, _) => return "停止中".into(),
+            (OperationTaskPhase::Cancelling, _) => {
+                return locale_text(locale, "停止中", "Stopping").into()
+            }
             _ => {}
         }
     }
@@ -173,46 +181,68 @@ fn openclaw_label(
             let version = snapshot
                 .openclaw_version
                 .clone()
-                .unwrap_or_else(|| "已安装".into());
+                .unwrap_or_else(|| locale_text(locale, "已安装", "Installed").into());
             if snapshot.update_available {
-                format!("{version} (可更新)")
+                if matches!(locale, LocalePreference::EnUs) {
+                    format!("{version} (update available)")
+                } else {
+                    format!("{version} (可更新)")
+                }
             } else {
                 version
             }
         }
-        Some(_) => "未安装".into(),
-        None => "检测中".into(),
+        Some(_) => locale_text(locale, "未安装", "Not installed").into(),
+        None => locale_text(locale, "检测中", "Checking").into(),
     }
 }
 
-fn gateway_label(environment: Option<&EnvironmentSnapshot>) -> &'static str {
+fn gateway_label(
+    locale: LocalePreference,
+    environment: Option<&EnvironmentSnapshot>,
+) -> &'static str {
     match environment {
         Some(snapshot)
             if snapshot.runtime_status.phase == crate::types::RuntimePhase::Connecting =>
         {
-            "连接中"
+            locale_text(locale, "连接中", "Connecting")
         }
-        Some(snapshot) if snapshot.runtime_status.gateway_connected => "已连接",
-        Some(_) => "未连接",
-        None => "检测中",
+        Some(snapshot) if snapshot.runtime_status.gateway_connected => {
+            locale_text(locale, "已连接", "Connected")
+        }
+        Some(_) => locale_text(locale, "未连接", "Not connected"),
+        None => locale_text(locale, "检测中", "Checking"),
     }
 }
 
-fn ssh_label(environment: Option<&EnvironmentSnapshot>) -> &'static str {
+fn ssh_label(locale: LocalePreference, environment: Option<&EnvironmentSnapshot>) -> &'static str {
     match environment {
-        Some(snapshot) if snapshot.runtime_status.ssh_connected => "已连接",
-        Some(snapshot) if snapshot.target_ssh_installed => "已就绪",
-        Some(_) => "待补齐",
-        None => "检测中",
+        Some(snapshot) if snapshot.runtime_status.ssh_connected => {
+            locale_text(locale, "已连接", "Connected")
+        }
+        Some(snapshot) if snapshot.target_ssh_installed => locale_text(locale, "已就绪", "Ready"),
+        Some(_) => locale_text(locale, "待补齐", "Needs setup"),
+        None => locale_text(locale, "检测中", "Checking"),
     }
 }
 
-fn token_label(environment: Option<&EnvironmentSnapshot>) -> &'static str {
+fn token_label(
+    locale: LocalePreference,
+    environment: Option<&EnvironmentSnapshot>,
+) -> &'static str {
     match environment.map(|snapshot| snapshot.token_status) {
-        Some(TokenStatus::Saved) => "已保存",
-        Some(TokenStatus::Error) => "存储异常",
-        Some(TokenStatus::Missing) => "未保存",
-        None => "检测中",
+        Some(TokenStatus::Saved) => locale_text(locale, "已保存", "Saved"),
+        Some(TokenStatus::Error) => locale_text(locale, "存储异常", "Storage error"),
+        Some(TokenStatus::Missing) => locale_text(locale, "未保存", "Missing"),
+        None => locale_text(locale, "检测中", "Checking"),
+    }
+}
+
+fn locale_text(locale: LocalePreference, zh: &'static str, en: &'static str) -> &'static str {
+    if matches!(locale, LocalePreference::EnUs) {
+        en
+    } else {
+        zh
     }
 }
 
@@ -223,13 +253,15 @@ mod tests {
         STATUS_SUBMENU_TITLE, TRAY_MENU_ACTIONS,
     };
     use crate::types::{
-        EnvironmentSnapshot, OperationKind, OperationTaskPhase, OperationTaskSnapshot,
-        RuntimePhase, RuntimeStatus, RuntimeTarget, TokenStatus,
+        EnvironmentSnapshot, LocalePreference, OperationKind, OperationTaskPhase,
+        OperationTaskSnapshot, RuntimePhase, RuntimeStatus, RuntimeTarget, TokenStatus,
+        UiPreferences,
     };
 
     #[test]
     fn renders_openclaw_menu_labels_for_install_states() {
         let running = openclaw_label(
+            LocalePreference::ZhCn,
             Some(&sample_snapshot()),
             Some(&OperationTaskSnapshot {
                 phase: OperationTaskPhase::Running,
@@ -243,13 +275,14 @@ mod tests {
         );
         assert_eq!(running, "安装中");
 
-        let installed = openclaw_label(Some(&sample_snapshot()), None);
+        let installed = openclaw_label(LocalePreference::ZhCn, Some(&sample_snapshot()), None);
         assert!(installed.contains("2026.3.8"));
     }
 
     #[test]
     fn renders_openclaw_menu_labels_for_update_and_cancelling_states() {
         let updating = openclaw_label(
+            LocalePreference::ZhCn,
             Some(&sample_snapshot()),
             Some(&OperationTaskSnapshot {
                 phase: OperationTaskPhase::Running,
@@ -264,6 +297,7 @@ mod tests {
         assert_eq!(updating, "更新中");
 
         let cancelling = openclaw_label(
+            LocalePreference::ZhCn,
             Some(&sample_snapshot()),
             Some(&OperationTaskSnapshot {
                 phase: OperationTaskPhase::Cancelling,
@@ -282,11 +316,17 @@ mod tests {
     fn renders_gateway_menu_labels_for_runtime_states() {
         let mut snapshot = sample_snapshot();
         snapshot.runtime_status.phase = RuntimePhase::Connecting;
-        assert_eq!(gateway_label(Some(&snapshot)), "连接中");
+        assert_eq!(
+            gateway_label(LocalePreference::ZhCn, Some(&snapshot)),
+            "连接中"
+        );
 
         snapshot.runtime_status.phase = RuntimePhase::Running;
         snapshot.runtime_status.gateway_connected = true;
-        assert_eq!(gateway_label(Some(&snapshot)), "已连接");
+        assert_eq!(
+            gateway_label(LocalePreference::ZhCn, Some(&snapshot)),
+            "已连接"
+        );
     }
 
     #[test]
@@ -297,7 +337,10 @@ mod tests {
     #[test]
     fn tray_menu_contains_status_submenu_and_actions() {
         assert_eq!(STATUS_SUBMENU_TITLE, "状态");
-        assert_eq!(TRAY_MENU_ACTIONS, [("show", "打开控制台"), ("quit", "退出")]);
+        assert_eq!(
+            TRAY_MENU_ACTIONS,
+            [("show", "打开控制台"), ("quit", "退出")]
+        );
     }
 
     #[test]
@@ -308,6 +351,22 @@ mod tests {
         assert_eq!(labels.gateway, "Gateway: 未连接");
         assert_eq!(labels.ssh, "SSH: 已就绪");
         assert_eq!(labels.token, "Token: 已保存");
+    }
+
+    #[test]
+    fn refreshes_tray_status_entries_in_english() {
+        let mut snapshot = sample_snapshot();
+        snapshot.ui_preferences.locale = LocalePreference::EnUs;
+
+        let labels = status_menu_labels(Some(&snapshot), None);
+
+        assert_eq!(
+            labels.openclaw,
+            "OpenClaw: OpenClaw 2026.3.8 (update available)"
+        );
+        assert_eq!(labels.gateway, "Gateway: Not connected");
+        assert_eq!(labels.ssh, "SSH: Ready");
+        assert_eq!(labels.token, "Token: Saved");
     }
 
     fn sample_snapshot() -> EnvironmentSnapshot {
@@ -323,6 +382,7 @@ mod tests {
             has_saved_profile: true,
             token_status: TokenStatus::Saved,
             token_status_message: None,
+            ui_preferences: UiPreferences::default(),
             saved_settings: None,
             runtime_status: RuntimeStatus::default(),
             install_recommendation: String::new(),

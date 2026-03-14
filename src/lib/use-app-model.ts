@@ -22,6 +22,7 @@ import {
   onRuntimeStatus,
   openManualInstall,
   saveProfile,
+  saveUiPreferences,
   startRuntime,
   stopOpenClawOperation,
   stopRuntime,
@@ -45,6 +46,7 @@ import {
   tokenStatusLabel,
   tokenStatusTone,
 } from '@/lib/runtime-view'
+import { appLocaleRef, setAppLocale, translate } from '@/lib/i18n'
 import type {
   BizClawUpdateState,
   CompanyProfileDraft,
@@ -58,6 +60,9 @@ import type {
   OperationTaskSnapshot,
   RuntimeStatus,
   TargetProfile,
+  ThemePreference,
+  LocalePreference,
+  UiPreferences,
   UserProfile,
 } from '@/types'
 
@@ -71,23 +76,76 @@ const defaultTargetProfile = (): TargetProfile => ({
   wslDistro: 'Ubuntu',
 })
 
+const defaultUiPreferences = (): UiPreferences => ({
+  theme: 'light',
+  locale: 'zh-CN',
+})
+
+type AppliedTheme = Exclude<ThemePreference, 'system'>
+
+const systemThemeMediaQuery = '(prefers-color-scheme: dark)'
+
+function resolveAppliedTheme(theme: ThemePreference): AppliedTheme {
+  if (theme !== 'system') {
+    return theme
+  }
+
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return 'light'
+  }
+
+  return window.matchMedia(systemThemeMediaQuery).matches ? 'dark' : 'light'
+}
+
+function applyThemePreference(theme: ThemePreference) {
+  const appliedTheme = resolveAppliedTheme(theme)
+  document.documentElement.dataset.theme = appliedTheme
+  document.documentElement.style.colorScheme = appliedTheme
+}
+
+function observeSystemTheme(handler: () => void): (() => void) | null {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return null
+  }
+
+  const mediaQuery = window.matchMedia(systemThemeMediaQuery)
+  if (typeof mediaQuery.addEventListener === 'function') {
+    mediaQuery.addEventListener('change', handler)
+    return () => mediaQuery.removeEventListener('change', handler)
+  }
+
+  mediaQuery.addListener(handler)
+  return () => mediaQuery.removeListener(handler)
+}
+
+function connectionTestStepLabel(step: ConnectionTestEvent['step']) {
+  switch (step) {
+    case 'save':
+      return translate('connectionTest.save')
+    case 'sshTunnel':
+      return translate('connectionTest.sshTunnel')
+    case 'gatewayProbe':
+      return translate('connectionTest.gatewayProbe')
+  }
+}
+
 function createConnectionTestSteps(): ConnectionTestModalStep[] {
   return [
     {
       step: 'save',
-      label: '配置已保存',
+      label: connectionTestStepLabel('save'),
       status: 'pending',
       message: '',
     },
     {
       step: 'sshTunnel',
-      label: 'SSH 隧道',
+      label: connectionTestStepLabel('sshTunnel'),
       status: 'pending',
       message: '',
     },
     {
       step: 'gatewayProbe',
-      label: 'Gateway 鉴权',
+      label: connectionTestStepLabel('gatewayProbe'),
       status: 'pending',
       message: '',
     },
@@ -130,7 +188,7 @@ function createBizClawUpdateState(): BizClawUpdateState {
 }
 
 export function useAppModel() {
-  const activeSection = ref<'overview' | 'install' | 'connection' | 'runtime'>('overview')
+  const activeSection = ref<'overview' | 'install' | 'connection' | 'runtime' | 'settings'>('overview')
   const environment = ref<EnvironmentSnapshot | null>(null)
   const operationTask = ref<OperationTaskSnapshot>(createIdleOperationTask())
   const operationEvents = ref<OperationEvent[]>([])
@@ -148,12 +206,14 @@ export function useAppModel() {
   const sshPasswordInput = ref('')
   const tokenInput = ref('')
   const hydratedFromSaved = ref(false)
+  const uiPreferences = ref<UiPreferences>(defaultUiPreferences())
   const companyProfile = reactive<CompanyProfileDraft>(createEmptyCompanyProfileDraft())
   const userProfile = reactive(defaultUserProfile())
   const targetProfile = reactive(defaultTargetProfile())
   const connectionTestModal = reactive<ConnectionTestModalState>(createConnectionTestModalState())
   const unlistenCallbacks: Array<() => void> = []
   const pendingBizClawUpdate = shallowRef<PendingBizClawUpdate | null>(null)
+  let stopObservingSystemTheme: (() => void) | null = null
 
   const companyProfileComplete = computed(() => isCompanyProfileDraftComplete(companyProfile))
   const displayNameReady = computed(() => userProfile.displayName.trim().length > 0)
@@ -181,28 +241,29 @@ export function useAppModel() {
     || bizclawUpdate.value.phase === 'installing'
   ))
   const connectionTestDisabledReason = computed(() => {
+    void appLocaleRef.value
     if (connectionActionBusy.value || installActionBusy.value) {
-      return '当前操作进行中，请稍候。'
+      return translate('runtime.startDisabled.blocking')
     }
 
     if (!environment.value) {
-      return '正在检测当前环境。'
+      return translate('runtime.startDisabled.checking')
     }
 
     if (environment.value.runtimeTarget === 'windowsWsl' && !environment.value.wslStatus?.ready) {
-      return '请先完成 WSL / Ubuntu 初始化。'
+      return translate('runtime.startDisabled.wsl')
     }
 
     if (!environment.value.targetSshInstalled) {
-      return '请先补齐目标运行环境中的 OpenSSH。'
+      return translate('runtime.startDisabled.ssh')
     }
 
     if (!environment.value.openclawInstalled) {
-      return '请先安装 OpenClaw CLI。'
+      return translate('runtime.startDisabled.openclaw')
     }
 
     if (runtimeStatus.value.phase === 'connecting' || runtimeStatus.value.phase === 'running') {
-      return '托管运行中时不能执行连接测试，请先停止托管。'
+      return translate('bizclaw.blockedRuntime')
     }
 
     return null
@@ -219,19 +280,20 @@ export function useAppModel() {
   const tokenStateLabel = computed(() => tokenStatusLabel(environment.value))
   const tokenStateToneValue = computed(() => tokenStatusTone(environment.value))
   const openclawStateLabel = computed(() => {
+    void appLocaleRef.value
     if (operationTask.value.phase === 'running' && operationTask.value.kind === 'install') {
-      return '安装中'
+      return translate('busy.installing')
     }
     if (operationTask.value.phase === 'running' && operationTask.value.kind === 'update') {
-      return '更新中'
+      return translate('busy.updating')
     }
     if (operationTask.value.phase === 'cancelling') {
-      return '停止中'
+      return translate('busy.stopping')
     }
     if (environment.value?.openclawInstalled) {
-      return environment.value.openclawVersion ?? '已就绪'
+      return environment.value.openclawVersion ?? translate('state.openclawReady')
     }
-    return '待安装'
+    return translate('state.openclawInstallPending')
   })
   const openclawStateTone = computed(() => {
     if (operationTask.value.phase === 'running' || operationTask.value.phase === 'cancelling') {
@@ -240,16 +302,24 @@ export function useAppModel() {
     return environment.value?.openclawInstalled ? 'success' : 'warning'
   })
   const sshStateLabel = computed(() => {
+    void appLocaleRef.value
     if (runtimeStatus.value.phase === 'running') {
-      return runtimeStatus.value.sshConnected ? '已连接' : '未连接'
+      return runtimeStatus.value.sshConnected
+        ? translate('common.connected')
+        : translate('common.notConnected')
     }
-    return environment.value?.targetSshInstalled ? '已就绪' : '待补齐'
+    return environment.value?.targetSshInstalled
+      ? translate('common.ready')
+      : translate('state.sshPending')
   })
   const gatewayStateLabel = computed(() => {
+    void appLocaleRef.value
     if (runtimeStatus.value.phase === 'connecting') {
-      return '连接中'
+      return translate('state.gatewayConnecting')
     }
-    return runtimeStatus.value.gatewayConnected ? '已连接' : '未连接'
+    return runtimeStatus.value.gatewayConnected
+      ? translate('common.connected')
+      : translate('common.notConnected')
   })
   const gatewayStateTone = computed(() => {
     if (runtimeStatus.value.phase === 'connecting') {
@@ -259,22 +329,22 @@ export function useAppModel() {
   })
   const statusItems = computed(() => ([
     {
-      label: 'Token',
+      label: translate('common.token'),
       value: tokenStateLabel.value,
       tone: tokenStateToneValue.value,
     },
     {
-      label: 'OpenClaw',
+      label: translate('common.openclaw'),
       value: openclawStateLabel.value,
       tone: openclawStateTone.value,
     },
     {
-      label: 'SSH',
+      label: translate('common.ssh'),
       value: sshStateLabel.value,
       tone: environment.value?.targetSshInstalled ? 'success' : 'warning',
     },
     {
-      label: 'Gateway',
+      label: translate('common.gateway'),
       value: gatewayStateLabel.value,
       tone: gatewayStateTone.value,
     },
@@ -286,12 +356,13 @@ export function useAppModel() {
     installBusyAction.value,
   ))
   const bizclawUpdateBlockedReason = computed(() => {
+    void appLocaleRef.value
     if (activeOperationBusy.value) {
-      return 'OpenClaw 安装或更新进行中时不能更新 BizClaw。'
+      return translate('bizclaw.blockedInstalling')
     }
 
     if (runtimeStatus.value.phase === 'connecting' || runtimeStatus.value.phase === 'running') {
-      return '托管运行中时不能更新 BizClaw，请先停止托管。'
+      return translate('bizclaw.blockedRuntime')
     }
 
     return null
@@ -313,48 +384,62 @@ export function useAppModel() {
     }
   })
   const bizclawUpdateActionLabel = computed(() => {
+    void appLocaleRef.value
     switch (bizclawUpdate.value.phase) {
       case 'checking':
-        return '检查更新中'
+        return translate('bizclaw.action.checking')
       case 'upToDate':
-        return '已是最新版本'
+        return translate('bizclaw.action.upToDate')
       case 'available':
-        return '检测到新版本'
+        return translate('bizclaw.action.available')
       case 'downloading':
-        return '下载中'
+        return translate('bizclaw.action.downloading')
       case 'installing':
-        return '安装中'
+        return translate('bizclaw.action.installing')
       case 'readyToRestart':
-        return '等待重启'
+        return translate('bizclaw.action.readyToRestart')
       case 'error':
-        return '更新失败'
+        return translate('bizclaw.action.error')
       default:
-        return bizclawUpdate.value.currentVersion ? '已加载当前版本' : '检测当前版本中'
+        return bizclawUpdate.value.currentVersion
+          ? translate('bizclaw.action.loaded')
+          : translate('bizclaw.action.loading')
     }
   })
   const bizclawUpdatePrimaryAction = computed(() => (
-    bizclawUpdate.value.phase === 'readyToRestart' ? '立即重启' : '立即更新'
+    void appLocaleRef.value,
+    bizclawUpdate.value.phase === 'readyToRestart'
+      ? translate('install.restartNow')
+      : translate('install.installNow')
   ))
   const bizclawUpdateDetail = computed(() => {
+    void appLocaleRef.value
     switch (bizclawUpdate.value.phase) {
       case 'checking':
-        return '正在从 GitHub Releases 获取最新 BizClaw 版本。'
+        return translate('bizclaw.detail.checking')
       case 'upToDate':
-        return `当前版本 ${bizclawUpdate.value.currentVersion ?? '未知'} 已是最新版本。`
+        return translate('bizclaw.detail.upToDate', {
+          version: bizclawUpdate.value.currentVersion ?? translate('common.unknown'),
+        })
       case 'available':
-        return `当前 ${bizclawUpdate.value.currentVersion ?? '未知'}，可更新到 ${bizclawUpdate.value.latestVersion ?? '最新版本'}`
+        return translate('bizclaw.detail.available', {
+          current: bizclawUpdate.value.currentVersion ?? translate('common.unknown'),
+          latest: bizclawUpdate.value.latestVersion ?? translate('common.latest'),
+        })
       case 'downloading':
-        return '正在下载 BizClaw 更新包。'
+        return translate('bizclaw.detail.downloading')
       case 'installing':
-        return '更新包下载完成，正在安装。'
+        return translate('bizclaw.detail.installing')
       case 'readyToRestart':
-        return `BizClaw ${bizclawUpdate.value.latestVersion ?? '新版本'} 已安装，重启后生效。`
+        return translate('bizclaw.detail.readyToRestart', {
+          version: bizclawUpdate.value.latestVersion ?? translate('common.latest'),
+        })
       case 'error':
-        return bizclawUpdate.value.errorMessage ?? 'BizClaw 更新未完成。'
+        return bizclawUpdate.value.errorMessage ?? translate('bizclaw.detail.failed')
       default:
         return bizclawUpdate.value.currentVersion
-          ? `当前 BizClaw 版本为 ${bizclawUpdate.value.currentVersion}。`
-          : '正在读取当前 BizClaw 版本。'
+          ? translate('bizclaw.detail.current', { version: bizclawUpdate.value.currentVersion })
+          : translate('bizclaw.detail.loading')
     }
   })
   const operationHeadline = computed(() => latestOperationDetail(operationEvents.value))
@@ -366,7 +451,7 @@ export function useAppModel() {
     lastError: null,
   })
   const platformLabel = computed(() => (
-    environment.value ? runtimeTargetLabel(environment.value.runtimeTarget) : '检测中'
+    environment.value ? runtimeTargetLabel(environment.value.runtimeTarget) : translate('common.checkPending')
   ))
   const connectionTestCloseDisabled = computed(() => (
     connectionTestBusy.value && connectionTestModal.phase === 'running'
@@ -398,13 +483,14 @@ export function useAppModel() {
     }
 
     if (operationTask.value.phase === 'error') {
-      return operationTask.value.lastResult?.followUp ?? '安装或更新未完成。'
+      return operationTask.value.lastResult?.followUp ?? translate('runtime.operationsSummary.failedDetail')
     }
 
     return null
   })
 
   const overviewCards = computed(() => {
+    void appLocaleRef.value
     const snapshot = environment.value
     if (!snapshot) {
       return []
@@ -412,39 +498,41 @@ export function useAppModel() {
 
     return [
       {
-        label: '目标运行时',
+        label: translate('overview.targetRuntime'),
         value: platformLabel.value,
         detail: snapshot.runtimeTarget === 'windowsWsl'
           ? (snapshot.wslStatus?.ready
-            ? `${snapshot.wslStatus.distroName} 已就绪`
-            : snapshot.wslStatus?.message ?? '等待 WSL 初始化')
-          : 'OpenClaw 与 SSH 在本机运行',
+            ? translate('overview.ubuntuReady', { name: snapshot.wslStatus.distroName })
+            : snapshot.wslStatus?.message ?? translate('overview.waitWsl'))
+          : translate('overview.localRuntimeDetail'),
         tone: snapshot.runtimeTarget === 'windowsWsl' && !snapshot.wslStatus?.ready
           ? 'warning'
           : 'success',
       },
       {
-        label: 'OpenClaw',
+        label: translate('overview.openclaw'),
         value: snapshot.openclawInstalled
-          ? (snapshot.openclawVersion ?? '已安装')
-          : '未安装',
+          ? (snapshot.openclawVersion ?? translate('overview.installed'))
+          : translate('overview.notInstalled'),
         detail: snapshot.updateAvailable
-          ? `可更新到 ${snapshot.latestOpenclawVersion ?? '最新版本'}`
+          ? translate('overview.updateAvailable', {
+            version: snapshot.latestOpenclawVersion ?? translate('common.latest'),
+          })
           : snapshot.installRecommendation,
         tone: snapshot.openclawInstalled ? (snapshot.updateAvailable ? 'active' : 'success') : 'warning',
       },
       {
-        label: 'OpenSSH',
-        value: snapshot.targetSshInstalled ? '已就绪' : '待补齐',
+        label: translate('overview.openssh'),
+        value: snapshot.targetSshInstalled ? translate('common.ready') : translate('state.sshPending'),
         detail: snapshot.runtimeTarget === 'windowsWsl'
-          ? '检测 Ubuntu 内的 ssh'
-          : '检测本机 ssh',
+          ? translate('overview.detectUbuntuSsh')
+          : translate('overview.detectLocalSsh'),
         tone: snapshot.targetSshInstalled ? 'success' : 'warning',
       },
       {
-        label: '托管状态',
+        label: translate('overview.runtimeStatus'),
         value: runtimeDetail(runtimeStatus.value),
-        detail: `当前阶段：${runtimeStatus.value.phase}`,
+        detail: translate('overview.currentPhase', { phase: runtimeStatus.value.phase }),
         tone: runtimeStatus.value.phase === 'running'
           ? 'success'
           : runtimeStatus.value.phase === 'error'
@@ -454,9 +542,28 @@ export function useAppModel() {
     ]
   })
 
+  function syncUiPreferences(preferences: UiPreferences) {
+    stopObservingSystemTheme?.()
+    stopObservingSystemTheme = null
+    uiPreferences.value = { ...preferences }
+    applyThemePreference(preferences.theme)
+    if (preferences.theme === 'system') {
+      stopObservingSystemTheme = observeSystemTheme(() => {
+        if (uiPreferences.value.theme === 'system') {
+          applyThemePreference('system')
+        }
+      })
+    }
+    setAppLocale(preferences.locale)
+    for (const step of connectionTestModal.steps) {
+      step.label = connectionTestStepLabel(step.step)
+    }
+  }
+
   async function refreshEnvironment() {
     const snapshot = await detectEnvironment()
     environment.value = snapshot
+    syncUiPreferences(snapshot.uiPreferences)
     if (!hydratedFromSaved.value && snapshot.savedSettings) {
       Object.assign(
         companyProfile,
@@ -466,11 +573,17 @@ export function useAppModel() {
       Object.assign(targetProfile, snapshot.savedSettings.targetProfile)
       hydratedFromSaved.value = true
     }
+  }
+
+  async function refreshLogs() {
     logs.value = await streamLogs()
   }
 
-  async function refreshOperationalState() {
+  async function refreshOperationalState(options: { includeLogs?: boolean } = {}) {
     await refreshEnvironment()
+    if (options.includeLogs) {
+      await refreshLogs()
+    }
     operationTask.value = await getOperationStatus()
     operationEvents.value = await getOperationEvents()
   }
@@ -572,10 +685,10 @@ export function useAppModel() {
   function openConnectionTestModal() {
     connectionTestModal.open = true
     connectionTestModal.phase = 'running'
-    connectionTestModal.summary = '正在保存配置并测试连接，请稍候。'
+    connectionTestModal.summary = translate('connectionTest.runningSummary')
     connectionTestModal.result = null
     connectionTestModal.steps = createConnectionTestSteps()
-    markConnectionTestStep('save', 'success', '配置已保存')
+    markConnectionTestStep('save', 'success', translate('connectionTest.saved'))
   }
 
   function closeConnectionTestModal() {
@@ -726,7 +839,6 @@ export function useAppModel() {
   }
 
   async function checkBizClawUpdates() {
-    activeSection.value = 'install'
     bizclawUpdate.value = {
       ...bizclawUpdate.value,
       phase: 'checking',
@@ -836,7 +948,7 @@ export function useAppModel() {
       return
     }
 
-    await refreshOperationalState()
+    await refreshEnvironment()
   }
 
   async function saveAndTest() {
@@ -871,7 +983,7 @@ export function useAppModel() {
       connectionTestBusy.value = false
     }
 
-    await refreshOperationalState()
+    await refreshEnvironment()
   }
 
   async function startHostedRuntime() {
@@ -924,11 +1036,11 @@ export function useAppModel() {
       return
     }
 
-    await refreshOperationalState()
+    await refreshEnvironment()
   }
 
   onMounted(async () => {
-    await refreshOperationalState()
+    await refreshOperationalState({ includeLogs: true })
     await syncBizClawCurrentVersion()
     unlistenCallbacks.push(
       await onRuntimeLog((entry) => {
@@ -964,16 +1076,50 @@ export function useAppModel() {
     )
     unlistenCallbacks.push(
       await onRefreshRequested(() => {
-        void refreshOperationalState()
+        void refreshEnvironment()
       }),
     )
   })
 
   onBeforeUnmount(() => {
+    stopObservingSystemTheme?.()
+    stopObservingSystemTheme = null
     while (unlistenCallbacks.length > 0) {
       unlistenCallbacks.pop()?.()
     }
   })
+
+  async function updateUiPreferences(patch: Partial<UiPreferences>) {
+    const previous = { ...uiPreferences.value }
+    const next = { ...uiPreferences.value, ...patch }
+    syncUiPreferences(next)
+    const saved = await withActionError('ui-preferences', () => saveUiPreferences(next))
+    if (!saved) {
+      syncUiPreferences(previous)
+      return
+    }
+
+    syncUiPreferences(saved)
+    if (patch.locale && patch.locale !== previous.locale) {
+      await refreshEnvironment()
+    }
+  }
+
+  async function setTheme(theme: ThemePreference) {
+    if (uiPreferences.value.theme === theme) {
+      return
+    }
+
+    await updateUiPreferences({ theme })
+  }
+
+  async function setLocale(locale: LocalePreference) {
+    if (uiPreferences.value.locale === locale) {
+      return
+    }
+
+    await updateUiPreferences({ locale })
+  }
 
   return {
     activeSection,
@@ -1030,6 +1176,8 @@ export function useAppModel() {
     statusItems,
     stopOperation,
     stopHostedRuntime,
+    setLocale,
+    setTheme,
     targetProfile,
     tokenInput,
     tokenStateLabel,
@@ -1037,6 +1185,7 @@ export function useAppModel() {
     gatewayStateLabel,
     gatewayStateTone,
     sshStateLabel,
+    uiPreferences,
     operationTaskPhaseLabel,
     updateCli,
     userProfile,

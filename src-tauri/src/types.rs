@@ -40,6 +40,43 @@ pub struct UserProfile {
     pub run_in_background: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ThemePreference {
+    Light,
+    Dark,
+    System,
+}
+
+impl Default for ThemePreference {
+    fn default() -> Self {
+        Self::Light
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum LocalePreference {
+    #[serde(rename = "zh-CN", alias = "zhCn")]
+    ZhCn,
+    #[serde(rename = "en-US", alias = "enUs")]
+    EnUs,
+}
+
+impl Default for LocalePreference {
+    fn default() -> Self {
+        Self::ZhCn
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UiPreferences {
+    #[serde(default)]
+    pub theme: ThemePreference,
+    #[serde(default)]
+    pub locale: LocalePreference,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PersistedSettings {
@@ -98,6 +135,8 @@ pub struct EnvironmentSnapshot {
     pub has_saved_profile: bool,
     pub token_status: TokenStatus,
     pub token_status_message: Option<String>,
+    #[serde(default)]
+    pub ui_preferences: UiPreferences,
     pub saved_settings: Option<PersistedSettings>,
     pub runtime_status: RuntimeStatus,
     pub install_recommendation: String,

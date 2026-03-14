@@ -12,7 +12,16 @@ vi.mock('@tauri-apps/plugin-updater', () => ({
   check: vi.fn(),
 }))
 
-import { describeBizClawUpdaterError } from './bizclaw-updater'
+import { check } from '@tauri-apps/plugin-updater'
+import { getVersion } from '@tauri-apps/api/app'
+import { relaunch } from '@tauri-apps/plugin-process'
+
+import {
+  checkForBizClawUpdate,
+  describeBizClawUpdaterError,
+  getCurrentBizClawVersion,
+  relaunchBizClaw,
+} from './bizclaw-updater'
 
 describe('describeBizClawUpdaterError', () => {
   it('translates missing release manifest failures into an actionable message', () => {
@@ -23,5 +32,17 @@ describe('describeBizClawUpdaterError', () => {
 
   it('passes through unrelated errors unchanged', () => {
     expect(describeBizClawUpdaterError(new Error('network timeout'))).toBe('network timeout')
+  })
+
+  it('skips updater calls when tauri internals are unavailable', async () => {
+    delete (globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+
+    await expect(getCurrentBizClawVersion()).resolves.toBeNull()
+    await expect(checkForBizClawUpdate()).resolves.toBeNull()
+    await expect(relaunchBizClaw()).resolves.toBeUndefined()
+
+    expect(getVersion).not.toHaveBeenCalled()
+    expect(check).not.toHaveBeenCalled()
+    expect(relaunch).not.toHaveBeenCalled()
   })
 })

@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import { operationStepLabel, phaseLabel } from '@/lib/runtime-view'
+import AppConnectionSection from './components/AppConnectionSection.vue'
+import AppInstallSection from './components/AppInstallSection.vue'
+import AppOverviewSection from './components/AppOverviewSection.vue'
+import AppRuntimeLogsSection from './components/AppRuntimeLogsSection.vue'
+import AppSidebar from './components/AppSidebar.vue'
+import AppStatusBar from './components/AppStatusBar.vue'
+import AppSettingsSection from './components/AppSettingsSection.vue'
+import AppWorkspaceHeader from './components/AppWorkspaceHeader.vue'
+import { translate } from '@/lib/i18n'
 import { useAppModel } from '@/lib/use-app-model'
 import type { ConnectionTestModalStep } from '@/types'
 
@@ -40,9 +48,6 @@ const {
   operationHeadline,
   operationsSummary,
   operationTask,
-  operationTaskPhaseLabel,
-  openclawStateLabel,
-  openclawStateTone,
   overviewCards,
   platformLabel,
   profileError,
@@ -61,81 +66,135 @@ const {
   statusItems,
   stopOperation,
   stopHostedRuntime,
+  setLocale,
+  setTheme,
   targetProfile,
   tokenInput,
-  gatewayStateLabel,
-  gatewayStateTone,
   tokenStateLabel,
   tokenStateToneValue,
+  uiPreferences,
   updateCli,
   userProfile,
 } = useAppModel()
 
-const sections = [
-  { key: 'overview', label: '概览' },
-  { key: 'install', label: '安装与更新' },
-  { key: 'connection', label: '连接与配置' },
-  { key: 'runtime', label: '运行日志' },
-] as const
+const sections = computed(() => ([
+  { key: 'overview', label: translate('nav.overview') },
+  { key: 'install', label: translate('nav.install') },
+  { key: 'connection', label: translate('nav.connection') },
+  { key: 'runtime', label: translate('nav.runtime') },
+  { key: 'settings', label: translate('nav.settings') },
+] as const))
 
-const sectionTitle = computed(() => sections.find((item) => item.key === activeSection.value)?.label ?? '概览')
-const logPreview = computed(() => [...logs.value].reverse().slice(0, 16))
-const gatewayConnected = computed(() => (
-  runtimeStatus.value.phase === 'running' && runtimeStatus.value.gatewayConnected
-))
-const bizclawPublishedLabel = computed(() => (
-  bizclawUpdate.value.publishedAt
-    ? new Date(bizclawUpdate.value.publishedAt).toLocaleDateString()
-    : '未检测'
-))
-const bizclawProgressLabel = computed(() => {
-  if (!bizclawUpdate.value.totalBytes && bizclawUpdate.value.downloadedBytes === 0) {
-    return ''
-  }
+const sectionTitle = computed(() => sections.value.find((item) => item.key === activeSection.value)?.label ?? translate('nav.overview'))
 
-  if (bizclawUpdate.value.totalBytes) {
-    return `下载进度：${bizclawUpdate.value.downloadedBytes} / ${bizclawUpdate.value.totalBytes} bytes`
-  }
+const selectSection = (sectionKey: string) => {
+  activeSection.value = sectionKey as typeof activeSection.value
+}
 
-  return `已下载 ${bizclawUpdate.value.downloadedBytes} bytes`
-})
+const goInstall = () => {
+  activeSection.value = 'install'
+}
+
+const goConnection = () => {
+  activeSection.value = 'connection'
+}
+
+const installSectionState = {
+  environment,
+  operationsSummary,
+  platformLabel,
+  sshStateLabel,
+  operationTask,
+  installBusyAction,
+  canStopOperation,
+  operationHeadline,
+  operationError,
+  operationEvents,
+  installCli,
+  checkForUpdates,
+  updateCli,
+  stopOperation,
+  launchManualInstall,
+}
+
+const connectionSectionState = {
+  advancedOpen,
+  canSaveProfile,
+  canTestConnection,
+  canStartHostedRuntime,
+  companyProfile,
+  userProfile,
+  targetProfile,
+  tokenInput,
+  sshPasswordInput,
+  tokenStateToneValue,
+  tokenStateLabel,
+  profileError,
+  connectionTestDisabledReason,
+  saveOnly,
+  saveAndTest,
+  runtimeStatus,
+  platformLabel,
+  runtimeError,
+  runtimeStartBusy,
+  runtimeStopBusy,
+  connectDisabledReason,
+  startHostedRuntime,
+  stopHostedRuntime,
+}
+
+const settingsSectionState = {
+  uiPreferences,
+  setTheme,
+  setLocale,
+  bizclawUpdate,
+  bizclawUpdateActionLabel,
+  bizclawUpdateTone,
+  bizclawUpdateDetail,
+  bizclawUpdateBlockedReason,
+  bizclawUpdatePrimaryAction,
+  checkBizClawUpdates,
+  installBizClawUpdate,
+  restartBizClaw,
+  deferBizClawRestart,
+}
 
 const busyLabel = computed(() => {
   if (operationTask.value.phase === 'running' && operationTask.value.kind === 'install') {
-    return '安装中'
+    return translate('busy.installing')
   }
   if (operationTask.value.phase === 'running' && operationTask.value.kind === 'update') {
-    return '更新中'
+    return translate('busy.updating')
   }
   if (operationTask.value.phase === 'cancelling') {
-    return '停止中'
+    return translate('busy.stopping')
   }
   if (installBusyAction.value === 'check-update') {
-    return '检查更新中'
+    return translate('busy.checkingUpdate')
   }
   if (bizclawUpdate.value.phase === 'checking') {
-    return 'BizClaw 检查中'
+    return translate('busy.bizclawChecking')
   }
   if (bizclawUpdate.value.phase === 'downloading') {
-    return 'BizClaw 下载中'
+    return translate('busy.bizclawDownloading')
   }
   if (bizclawUpdate.value.phase === 'installing') {
-    return 'BizClaw 安装中'
+    return translate('busy.bizclawInstalling')
   }
   if (manualInstallBusy.value) {
-    return '打开文档中'
+    return translate('busy.openingDocs')
   }
   if (saveBusy.value) {
-    return '保存中'
+    return translate('busy.saving')
   }
   if (connectionTestBusy.value) {
-    return '测试中'
+    return translate('busy.testing')
   }
   if (runtimeStartBusy.value) {
-    return '启动中'
+    return translate('busy.starting')
   }
   if (runtimeStopBusy.value) {
-    return '停止中'
+    return translate('busy.stopping')
   }
   return ''
 })
@@ -156,394 +215,65 @@ function connectionStepTone(status: ConnectionTestModalStep['status']) {
 function connectionStepLabel(status: ConnectionTestModalStep['status']) {
   switch (status) {
     case 'success':
-      return '完成'
+      return translate('common.success')
     case 'error':
-      return '失败'
+      return translate('common.failure')
     case 'running':
-      return '进行中'
+      return translate('common.inProgress')
     default:
-      return '待执行'
+      return translate('common.pending')
   }
 }
 </script>
 
 <template>
   <main class="ops-shell">
-    <aside class="sidebar surface-card">
-      <div class="brand-panel brand-panel--minimal">
-        <h1>BIZCLAW</h1>
-      </div>
-
-      <nav class="sidebar-nav" aria-label="主导航">
-        <button
-          v-for="item in sections"
-          :key="item.key"
-          class="nav-button"
-          :data-active="activeSection === item.key"
-          @click="activeSection = item.key"
-        >
-          <span>{{ item.label }}</span>
-        </button>
-      </nav>
-    </aside>
+    <AppSidebar
+      :sections="sections"
+      :active-section="activeSection"
+      @select-section="selectSection"
+    />
 
     <section class="workspace">
-      <header class="workspace-header surface-card">
-        <div>
-          <p class="eyebrow">Workspace</p>
-          <h2>{{ sectionTitle }}</h2>
-        </div>
-        <div class="workspace-actions">
-          <span
-            class="status-chip"
-            :data-tone="runtimeStatus.phase === 'running' ? 'success' : runtimeStatus.phase === 'error' ? 'error' : 'neutral'"
-          >
-            {{ phaseLabel(runtimeStatus.phase) }}
-          </span>
-          <span v-if="busyLabel" class="status-chip" data-tone="active">{{ busyLabel }}</span>
-          <button class="secondary-button" @click="refreshEnvironment">重新检测</button>
-        </div>
-      </header>
+      <AppWorkspaceHeader
+        :section-title="sectionTitle"
+        :runtime-phase="runtimeStatus.phase"
+        :busy-label="busyLabel"
+        @refresh="refreshEnvironment"
+      />
 
-      <section v-if="activeSection === 'overview'" class="page-grid">
-        <article class="hero-card surface-card">
-          <p class="eyebrow">Snapshot</p>
-          <h3>{{ operationsSummary.title }}</h3>
-          <p class="supporting-text">{{ operationsSummary.detail }}</p>
-          <div class="hero-actions">
-            <button class="primary-button" @click="activeSection = 'install'">前往安装与更新</button>
-            <button class="secondary-button" @click="activeSection = 'connection'">前往连接与配置</button>
-          </div>
-        </article>
+      <KeepAlive>
+        <AppOverviewSection
+          v-if="activeSection === 'overview'"
+          :operations-summary="operationsSummary"
+          :overview-cards="overviewCards"
+          :go-install="goInstall"
+          :go-connection="goConnection"
+        />
 
-        <article
-          v-for="card in overviewCards"
-          :key="card.label"
-          class="overview-card surface-card"
-          :data-tone="card.tone"
-        >
-          <span class="card-label">{{ card.label }}</span>
-          <strong>{{ card.value }}</strong>
-          <p class="supporting-text">{{ card.detail }}</p>
-        </article>
-      </section>
+        <AppInstallSection
+          v-else-if="activeSection === 'install'"
+          :state="installSectionState"
+        />
 
-      <section v-else-if="activeSection === 'install'" class="page-stack">
-        <article class="surface-card section-card">
-          <div class="section-header">
-            <div>
-              <p class="eyebrow">BizClaw App</p>
-              <h3>BizClaw 应用更新</h3>
-            </div>
-            <span class="status-chip" :data-tone="bizclawUpdateTone">{{ bizclawUpdateActionLabel }}</span>
-          </div>
-          <p class="supporting-text">{{ bizclawUpdateDetail }}</p>
-          <div class="support-grid">
-            <div class="support-tile">
-              <span>当前 BizClaw 版本</span>
-              <strong>{{ bizclawUpdate.currentVersion ?? '检测中' }}</strong>
-            </div>
-            <div class="support-tile">
-              <span>最新 BizClaw 版本</span>
-              <strong>{{ bizclawUpdate.latestVersion ?? '未检测' }}</strong>
-            </div>
-            <div class="support-tile">
-              <span>发布时间</span>
-              <strong>{{ bizclawPublishedLabel }}</strong>
-            </div>
-            <div class="support-tile">
-              <span>重启状态</span>
-              <strong>{{ bizclawUpdate.phase === 'readyToRestart' ? '待重启' : '无需重启' }}</strong>
-            </div>
-          </div>
-          <div class="button-row">
-            <button
-              class="secondary-button"
-              :disabled="bizclawUpdate.phase === 'checking' || bizclawUpdate.phase === 'downloading' || bizclawUpdate.phase === 'installing'"
-              @click="checkBizClawUpdates"
-            >
-              检查更新
-            </button>
-            <button
-              v-if="bizclawUpdate.phase !== 'readyToRestart'"
-              class="primary-button"
-              :disabled="bizclawUpdate.phase !== 'available' || !!bizclawUpdateBlockedReason"
-              @click="installBizClawUpdate"
-            >
-              {{ bizclawUpdatePrimaryAction }}
-            </button>
-            <template v-else>
-              <button class="primary-button" @click="restartBizClaw">
-                {{ bizclawUpdatePrimaryAction }}
-              </button>
-              <button class="secondary-button" @click="deferBizClawRestart">
-                稍后
-              </button>
-            </template>
-          </div>
-          <p v-if="bizclawUpdate.releaseNotes" class="helper-text">
-            发布说明：{{ bizclawUpdate.releaseNotes }}
-          </p>
-          <p v-if="bizclawProgressLabel" class="helper-text">
-            {{ bizclawProgressLabel }}
-          </p>
-          <p v-if="bizclawUpdateBlockedReason && bizclawUpdate.phase === 'available'" class="helper-text">
-            {{ bizclawUpdateBlockedReason }}
-          </p>
-          <p v-if="bizclawUpdate.errorMessage" class="error-banner">
-            {{ bizclawUpdate.errorMessage }}
-          </p>
-        </article>
+        <AppConnectionSection
+          v-else-if="activeSection === 'connection'"
+          :state="connectionSectionState"
+        />
 
-        <article class="surface-card section-card">
-          <div class="section-header">
-            <div>
-              <p class="eyebrow">Install & Update</p>
-              <h3>目标环境准备</h3>
-            </div>
-            <span class="status-chip" :data-tone="operationsSummary.tone">{{ operationsSummary.title }}</span>
-          </div>
-          <p class="supporting-text">{{ operationsSummary.detail }}</p>
-          <div class="support-grid">
-            <div class="support-tile">
-              <span>目标运行时</span>
-              <strong>{{ platformLabel }}</strong>
-            </div>
-            <div class="support-tile">
-              <span>当前版本</span>
-              <strong>{{ environment?.openclawVersion ?? '未安装' }}</strong>
-            </div>
-            <div class="support-tile">
-              <span>最新版本</span>
-              <strong>{{ environment?.latestOpenclawVersion ?? '未检测' }}</strong>
-            </div>
-            <div class="support-tile">
-              <span>OpenSSH</span>
-              <strong>{{ sshStateLabel }}</strong>
-            </div>
-          </div>
-          <div class="button-row">
-            <button
-              class="primary-button"
-              :disabled="operationTask.phase === 'running' || operationTask.phase === 'cancelling'"
-              @click="installCli"
-            >
-              安装 OpenClaw
-            </button>
-            <button class="secondary-button" :disabled="installBusyAction === 'check-update'" @click="checkForUpdates">
-              检查更新
-            </button>
-            <button
-              class="secondary-button"
-              :disabled="!environment?.updateAvailable || operationTask.phase === 'running' || operationTask.phase === 'cancelling'"
-              @click="updateCli"
-            >
-              更新 OpenClaw
-            </button>
-            <button
-              v-if="canStopOperation"
-              class="secondary-button"
-              @click="stopOperation"
-            >
-              停止
-            </button>
-            <button class="ghost-button" @click="launchManualInstall">官方文档</button>
-          </div>
-          <p v-if="operationTask.step" class="helper-text">
-            当前步骤：{{ operationStepLabel(operationTask.step) }} · {{ operationTaskPhaseLabel(operationTask.phase) }}
-          </p>
-          <p v-if="environment?.wslStatus?.message" class="helper-text">
-            {{ environment.wslStatus.message }}
-          </p>
-          <p class="helper-text">{{ operationHeadline }}</p>
-          <p v-if="operationError" class="error-banner">{{ operationError }}</p>
-        </article>
+        <AppSettingsSection
+          v-else-if="activeSection === 'settings'"
+          :state="settingsSectionState"
+        />
 
-        <article class="surface-card section-card">
-          <div class="section-header">
-            <div>
-              <p class="eyebrow">Live Console</p>
-              <h3>安装 / 更新输出</h3>
-            </div>
-            <span
-              class="status-chip"
-              :data-tone="operationTask.phase === 'error' ? 'error' : operationTask.phase === 'success' ? 'success' : operationTask.phase === 'cancelled' ? 'neutral' : 'active'"
-            >
-              {{ operationTaskPhaseLabel(operationTask.phase) }}
-            </span>
-          </div>
-          <ol class="operation-list">
-            <li v-for="entry in operationEvents" :key="`${entry.timestampMs}-${entry.message}`">
-              <time>{{ new Date(entry.timestampMs).toLocaleTimeString() }}</time>
-              <strong>{{ operationStepLabel(entry.step) }}</strong>
-              <span>{{ entry.message }}</span>
-            </li>
-          </ol>
-        </article>
-      </section>
-
-      <section v-else-if="activeSection === 'connection'" class="page-stack">
-        <article class="surface-card section-card">
-          <div class="section-header">
-            <div>
-              <p class="eyebrow">Connection</p>
-              <h3>保存连接配置</h3>
-            </div>
-            <span class="status-chip" :data-tone="tokenStateToneValue">{{ tokenStateLabel }}</span>
-          </div>
-          <div class="form-grid form-grid--compact">
-            <label class="field">
-              <span>显示名称</span>
-              <input v-model="userProfile.displayName" placeholder="名称" />
-            </label>
-            <label class="field">
-              <span>Gateway Token</span>
-              <input
-                v-model="tokenInput"
-                type="password"
-                placeholder="如已保存，可留空保持原值"
-              />
-            </label>
-            <label class="field">
-              <span>SSH Host</span>
-              <input v-model="companyProfile.sshHost" placeholder="gateway.example.com" />
-            </label>
-            <label class="field">
-              <span>SSH User</span>
-              <input v-model="companyProfile.sshUser" placeholder="bizclaw" />
-            </label>
-          </div>
-
-          <div class="toggle-row">
-            <label class="toggle-pill">
-              <input v-model="userProfile.runInBackground" type="checkbox" />
-              <span>关闭窗口后继续后台运行</span>
-            </label>
-          </div>
-
-          <button class="inline-button" @click="advancedOpen = !advancedOpen">
-            {{ advancedOpen ? '收起高级参数' : '展开高级参数' }}
-          </button>
-
-          <div v-if="advancedOpen" class="advanced-grid">
-            <label class="field">
-              <span>WSL Distro</span>
-              <input v-model="targetProfile.wslDistro" placeholder="Ubuntu" />
-            </label>
-            <label class="field">
-              <span>Local Port</span>
-              <input v-model="companyProfile.localPort" inputmode="numeric" />
-            </label>
-            <label class="field">
-              <span>Remote Bind Host</span>
-              <input v-model="companyProfile.remoteBindHost" />
-            </label>
-            <label class="field">
-              <span>Remote Bind Port</span>
-              <input v-model="companyProfile.remoteBindPort" inputmode="numeric" />
-            </label>
-            <label class="field field--span">
-              <span>SSH Password</span>
-              <input
-                v-model="sshPasswordInput"
-                type="password"
-                placeholder="如已保存，可留空保持原值"
-              />
-            </label>
-          </div>
-
-          <p class="helper-text">
-            默认使用 `127.0.0.1` loopback 转发；只有在网关部署要求不同的时候才需要改高级参数。
-          </p>
-          <p v-if="profileError" class="error-banner">{{ profileError }}</p>
-          <p v-if="connectionTestDisabledReason" class="helper-text">{{ connectionTestDisabledReason }}</p>
-          <div class="button-row button-row--end">
-            <button class="secondary-button" :disabled="!canSaveProfile" @click="saveOnly">
-              仅保存
-            </button>
-            <button class="primary-button" :disabled="!canTestConnection" @click="saveAndTest">
-              保存并测试
-            </button>
-          </div>
-        </article>
-
-        <article class="surface-card section-card">
-          <div class="section-header">
-            <div>
-              <p class="eyebrow">Runtime</p>
-              <h3>托管运行时</h3>
-            </div>
-            <span class="status-chip" :data-tone="runtimeStatus.phase === 'running' ? 'success' : 'neutral'">
-              {{ phaseLabel(runtimeStatus.phase) }}
-            </span>
-          </div>
-          <div class="support-grid support-grid--metrics">
-            <div class="support-tile">
-              <span>Gateway</span>
-              <strong>{{ gatewayConnected ? '已连接' : '未连接' }}</strong>
-            </div>
-            <div class="support-tile">
-              <span>SSH</span>
-              <strong>{{ runtimeStatus.sshConnected ? '已连接' : '未连接' }}</strong>
-            </div>
-            <div class="support-tile">
-              <span>Node</span>
-              <strong>{{ runtimeStatus.nodeConnected ? '已连接' : '未连接' }}</strong>
-            </div>
-            <div class="support-tile">
-              <span>目标环境</span>
-              <strong>{{ platformLabel }}</strong>
-            </div>
-          </div>
-          <div class="button-row">
-            <button
-              class="primary-button"
-              :disabled="!canStartHostedRuntime"
-              @click="startHostedRuntime"
-            >
-              启动托管
-            </button>
-            <button
-              class="secondary-button"
-              :disabled="runtimeStopBusy || runtimeStatus.phase !== 'running'"
-              @click="stopHostedRuntime"
-            >
-              停止托管
-            </button>
-          </div>
-          <p v-if="connectDisabledReason && runtimeStatus.phase !== 'running'" class="helper-text">
-            {{ connectDisabledReason }}
-          </p>
-          <p v-if="runtimeError" class="error-banner">{{ runtimeError }}</p>
-        </article>
-      </section>
-
-      <section v-else class="page-stack">
-        <article class="surface-card section-card">
-          <div class="section-header">
-            <div>
-              <p class="eyebrow">Runtime Log</p>
-              <h3>最近日志</h3>
-            </div>
-            <span class="status-chip" data-tone="neutral">{{ logs.length }} 条</span>
-          </div>
-          <ol class="log-list">
-            <li v-for="entry in logPreview" :key="`${entry.timestampMs}-${entry.message}`">
-              <time>{{ new Date(entry.timestampMs).toLocaleTimeString() }}</time>
-              <strong>[{{ entry.source }}]</strong>
-              <span>{{ entry.message }}</span>
-            </li>
-          </ol>
-        </article>
-      </section>
+        <AppRuntimeLogsSection
+          v-else
+          :logs="logs"
+        />
+      </KeepAlive>
     </section>
 
-    <footer class="status-bar surface-card">
-      <div v-for="item in statusItems" :key="item.label" class="status-bar-item">
-        <span>{{ item.label }}</span>
-        <strong :data-tone="item.tone">{{ item.value }}</strong>
-      </div>
-    </footer>
+    <AppStatusBar :status-items="statusItems" />
   </main>
 
   <Teleport to="body">
@@ -551,16 +281,16 @@ function connectionStepLabel(status: ConnectionTestModalStep['status']) {
       <section class="modal-card surface-card" role="dialog" aria-modal="true" aria-labelledby="connection-test-title">
         <div class="section-header">
           <div>
-            <p class="eyebrow">Connection Test</p>
-            <h3 id="connection-test-title">连接测试结果</h3>
+            <p class="eyebrow">{{ translate('connectionTest.modalEyebrow') }}</p>
+            <h3 id="connection-test-title">{{ translate('connectionTest.modalTitle') }}</h3>
           </div>
           <span class="status-chip" :data-tone="connectionTestModal.phase === 'success' ? 'success' : connectionTestModal.phase === 'error' ? 'error' : 'active'">
             {{
               connectionTestModal.phase === 'success'
-                ? '测试通过'
+                ? translate('connectionTest.pass')
                 : connectionTestModal.phase === 'error'
-                  ? '测试失败'
-                  : '测试中'
+                  ? translate('connectionTest.fail')
+                  : translate('connectionTest.running')
             }}
           </span>
         </div>
@@ -571,7 +301,7 @@ function connectionStepLabel(status: ConnectionTestModalStep['status']) {
           <li v-for="step in connectionTestModal.steps" :key="step.step" class="connection-test-item">
             <div>
               <strong>{{ step.label }}</strong>
-              <p class="supporting-text">{{ step.message || '等待执行。' }}</p>
+              <p class="supporting-text">{{ step.message || translate('connectionTest.waiting') }}</p>
             </div>
             <span class="status-chip" :data-tone="connectionStepTone(step.status)">
               {{ connectionStepLabel(step.status) }}
@@ -584,18 +314,18 @@ function connectionStepLabel(status: ConnectionTestModalStep['status']) {
           class="connection-test-output"
         >
           <div v-if="connectionTestModal.result.stdout">
-            <span class="card-label">stdout</span>
+            <span class="card-label">{{ translate('common.stdout') }}</span>
             <pre>{{ connectionTestModal.result.stdout }}</pre>
           </div>
           <div v-if="connectionTestModal.result.stderr">
-            <span class="card-label">stderr</span>
+            <span class="card-label">{{ translate('common.stderr') }}</span>
             <pre>{{ connectionTestModal.result.stderr }}</pre>
           </div>
         </div>
 
         <div class="button-row button-row--end">
           <button class="primary-button" :disabled="connectionTestCloseDisabled" @click="closeConnectionTestModal">
-            关闭
+            {{ translate('common.close') }}
           </button>
         </div>
       </section>

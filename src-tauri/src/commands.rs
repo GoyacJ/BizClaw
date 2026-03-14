@@ -13,12 +13,12 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{window::Color, AppHandle, Emitter, Manager, State, Theme};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::{
     app_menu,
-    config_store::JsonSettingsStore,
+    config_store::{JsonSettingsStore, JsonUiPreferencesStore},
     install::{
         command_available, compare_versions, current_platform, default_runtime_target,
         detect_wsl_status, elevated_install_plan, fallback_install_plans_for_target,
@@ -42,14 +42,15 @@ use crate::{
     secret_store::{LocalSecretStore, SecretStore},
     types::{
         CompanyProfile, ConnectionTestEvent, ConnectionTestEventStatus, ConnectionTestResult,
-        ConnectionTestStep, EnvironmentSnapshot, InstallRequest, LogEntry, OperationEvent,
-        OperationEventSource, OperationEventStatus, OperationKind, OperationResult, OperationStep,
-        OperationTaskPhase, OperationTaskSnapshot, PersistedSettings, RuntimePhase, RuntimeStatus,
-        RuntimeTarget, TargetProfile, TokenStatus, UserProfile, WslStatus,
+        ConnectionTestStep, EnvironmentSnapshot, InstallRequest, LocalePreference, LogEntry,
+        OperationEvent, OperationEventSource, OperationEventStatus, OperationKind, OperationResult,
+        OperationStep, OperationTaskPhase, OperationTaskSnapshot, PersistedSettings, RuntimePhase,
+        RuntimeStatus, RuntimeTarget, TargetProfile, ThemePreference, TokenStatus, UiPreferences,
+        UserProfile, WslStatus,
     },
     validation::{
-        saved_settings_are_complete, validate_company_profile, validate_target_profile,
-        validate_user_profile,
+        saved_settings_are_complete, validate_company_profile_with_locale,
+        validate_target_profile_with_locale, validate_user_profile_with_locale,
     },
 };
 
@@ -118,9 +119,15 @@ struct PortTaskGuard {
 }
 
 impl PortTaskGuard {
-    fn acquire(flag: Arc<AtomicBool>) -> Result<Self> {
+    fn acquire(flag: Arc<AtomicBool>, locale: LocalePreference) -> Result<Self> {
         flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| anyhow!("当前有连接操作进行中，请稍候"))?;
+            .map_err(|_| {
+                anyhow!(locale_text(
+                    locale,
+                    "当前有连接操作进行中，请稍候",
+                    "Another connection action is already running. Please wait."
+                ))
+            })?;
         Ok(Self { flag })
     }
 }
@@ -135,12 +142,28 @@ const CONNECTION_TEST_TIMEOUT_MS: u64 = 8_000;
 const CONNECTION_TEST_TUNNEL_READY_TIMEOUT: Duration = Duration::from_secs(6);
 const CONNECTION_TEST_TUNNEL_POLL_INTERVAL: Duration = Duration::from_millis(150);
 
+fn locale_text(locale: LocalePreference, zh: &'static str, en: &'static str) -> &'static str {
+    if matches!(locale, LocalePreference::EnUs) {
+        en
+    } else {
+        zh
+    }
+}
+
+fn locale_owned(locale: LocalePreference, zh: impl Into<String>, en: impl Into<String>) -> String {
+    if matches!(locale, LocalePreference::EnUs) {
+        en.into()
+    } else {
+        zh.into()
+    }
+}
+
 #[tauri::command]
 pub fn detect_environment(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<EnvironmentSnapshot, String> {
-    refresh_environment_snapshot(&app, &state).map_err(err_to_string)
+    refresh_environment_snapshot(&app, &state, false).map_err(err_to_string)
 }
 
 #[tauri::command]
@@ -149,7 +172,7 @@ pub fn install_openclaw(
     state: State<'_, AppState>,
     request: InstallRequest,
 ) -> Result<OperationTaskSnapshot, String> {
-    let snapshot = refresh_environment_snapshot(&app, &state).map_err(err_to_string)?;
+    let snapshot = refresh_environment_snapshot(&app, &state, false).map_err(err_to_string)?;
     start_install_or_update_task(
         &app,
         &state,
@@ -170,6 +193,7 @@ pub fn check_openclaw_update(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<EnvironmentSnapshot, String> {
+    let locale = current_locale(&app);
     emit_operation_event(
         &app,
         Some(&state.operation),
@@ -177,20 +201,39 @@ pub fn check_openclaw_update(
         OperationStep::CheckUpdate,
         OperationEventStatus::Running,
         OperationEventSource::System,
-        "正在检查 OpenClaw 更新",
+        locale_text(
+            locale,
+            "正在检查 OpenClaw 更新",
+            "Checking for OpenClaw updates",
+        ),
     );
 
-    let snapshot = refresh_environment_snapshot(&app, &state).map_err(err_to_string)?;
+    let snapshot = refresh_environment_snapshot(&app, &state, true).map_err(err_to_string)?;
     let message = if snapshot.update_available {
-        format!(
-            "检测到新版本：{}",
-            snapshot
-                .latest_openclaw_version
-                .clone()
-                .unwrap_or_else(|| "未知版本".into())
+        locale_owned(
+            locale,
+            format!(
+                "检测到新版本：{}",
+                snapshot
+                    .latest_openclaw_version
+                    .clone()
+                    .unwrap_or_else(|| locale_text(locale, "未知版本", "Unknown version").into())
+            ),
+            format!(
+                "New version available: {}",
+                snapshot
+                    .latest_openclaw_version
+                    .clone()
+                    .unwrap_or_else(|| locale_text(locale, "未知版本", "Unknown version").into())
+            ),
         )
     } else {
-        "当前已是最新版本，或暂时无法获取远端版本信息。".into()
+        locale_text(
+            locale,
+            "当前已是最新版本，或暂时无法获取远端版本信息。",
+            "OpenClaw is already up to date, or the remote version could not be loaded.",
+        )
+        .into()
     };
 
     emit_operation_event(
@@ -212,7 +255,7 @@ pub fn update_openclaw(
     state: State<'_, AppState>,
     request: InstallRequest,
 ) -> Result<OperationTaskSnapshot, String> {
-    let snapshot = refresh_environment_snapshot(&app, &state).map_err(err_to_string)?;
+    let snapshot = refresh_environment_snapshot(&app, &state, false).map_err(err_to_string)?;
     start_install_or_update_task(
         &app,
         &state,
@@ -265,6 +308,7 @@ pub fn save_profile(
     token: String,
     ssh_password: String,
 ) -> Result<PersistedSettings, String> {
+    let locale = current_locale(&app);
     let settings = PersistedSettings {
         company_profile,
         user_profile,
@@ -274,6 +318,7 @@ pub fn save_profile(
     let token_store = token_store(&app).map_err(err_to_string)?;
     let ssh_password_store = ssh_password_store(&app).map_err(err_to_string)?;
     persist_profile_atomic(
+        locale,
         &store,
         &token_store,
         &ssh_password_store,
@@ -284,8 +329,22 @@ pub fn save_profile(
     .map_err(err_to_string)?;
 
     mark_configured(&state.runtime, &app);
-    let _ = refresh_environment_snapshot(&app, &state);
+    let _ = refresh_environment_snapshot(&app, &state, false);
     Ok(settings)
+}
+
+#[tauri::command]
+pub fn save_ui_preferences(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    preferences: UiPreferences,
+) -> Result<UiPreferences, String> {
+    let store = ui_preferences_store(&app).map_err(err_to_string)?;
+    store.save(&preferences).map_err(err_to_string)?;
+    update_cached_ui_preferences(&state, &preferences);
+    sync_main_window_appearance(&app, &preferences).map_err(err_to_string)?;
+    let _ = app_menu::refresh_status_menu_from_state(&app);
+    Ok(preferences)
 }
 
 #[tauri::command]
@@ -293,23 +352,30 @@ pub async fn test_connection(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ConnectionTestResult, String> {
-    let guard = PortTaskGuard::acquire(state.port_task_active.clone()).map_err(err_to_string)?;
+    let locale = current_locale(&app);
+    let guard =
+        PortTaskGuard::acquire(state.port_task_active.clone(), locale).map_err(err_to_string)?;
     let runtime_status = snapshot_status(&state.runtime);
     if matches!(
         runtime_status.phase,
         RuntimePhase::Connecting | RuntimePhase::Running
     ) {
-        return Err("托管运行中时不能执行连接测试，请先停止托管。".into());
+        return Err(if matches!(locale, LocalePreference::EnUs) {
+            "Stop the hosted runtime before running a connection test.".into()
+        } else {
+            "托管运行中时不能执行连接测试，请先停止托管。".into()
+        });
     }
 
     let settings_store = settings_store(&app).map_err(err_to_string)?;
-    let settings = load_saved_settings(&settings_store).map_err(err_to_string)?;
-    validate_company_profile(&settings.company_profile).map_err(err_to_string)?;
-    validate_user_profile(&settings.user_profile).map_err(err_to_string)?;
-    validate_target_profile(&settings.target_profile).map_err(err_to_string)?;
+    let settings = load_saved_settings(locale, &settings_store).map_err(err_to_string)?;
+    validate_company_profile_with_locale(&settings.company_profile, locale)
+        .map_err(err_to_string)?;
+    validate_user_profile_with_locale(&settings.user_profile, locale).map_err(err_to_string)?;
+    validate_target_profile_with_locale(&settings.target_profile, locale).map_err(err_to_string)?;
 
     let secret_store = token_store(&app).map_err(err_to_string)?;
-    let token = load_saved_token(&secret_store).map_err(err_to_string)?;
+    let token = load_saved_token(locale, &secret_store).map_err(err_to_string)?;
     let ssh_password = ssh_password_store(&app)
         .and_then(|store| store.get_secret())
         .map_err(err_to_string)?;
@@ -322,6 +388,7 @@ pub async fn test_connection(
         let _guard = guard;
         run_connection_test(
             &app_handle,
+            locale,
             runtime_target,
             &target_profile,
             &company_profile,
@@ -336,23 +403,30 @@ pub async fn test_connection(
 
 #[tauri::command]
 pub fn start_runtime(app: AppHandle, state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
-    let guard = PortTaskGuard::acquire(state.port_task_active.clone()).map_err(err_to_string)?;
+    let locale = current_locale(&app);
+    let guard =
+        PortTaskGuard::acquire(state.port_task_active.clone(), locale).map_err(err_to_string)?;
     let runtime_status = snapshot_status(&state.runtime);
     if matches!(
         runtime_status.phase,
         RuntimePhase::Connecting | RuntimePhase::Running
     ) {
-        return Err("托管已在运行或正在连接，请稍候。".into());
+        return Err(if matches!(locale, LocalePreference::EnUs) {
+            "The hosted runtime is already running or still connecting.".into()
+        } else {
+            "托管已在运行或正在连接，请稍候。".into()
+        });
     }
 
     let settings_store = settings_store(&app).map_err(err_to_string)?;
-    let settings = load_saved_settings(&settings_store).map_err(err_to_string)?;
-    validate_company_profile(&settings.company_profile).map_err(err_to_string)?;
-    validate_user_profile(&settings.user_profile).map_err(err_to_string)?;
-    validate_target_profile(&settings.target_profile).map_err(err_to_string)?;
+    let settings = load_saved_settings(locale, &settings_store).map_err(err_to_string)?;
+    validate_company_profile_with_locale(&settings.company_profile, locale)
+        .map_err(err_to_string)?;
+    validate_user_profile_with_locale(&settings.user_profile, locale).map_err(err_to_string)?;
+    validate_target_profile_with_locale(&settings.target_profile, locale).map_err(err_to_string)?;
 
     let secret_store = token_store(&app).map_err(err_to_string)?;
-    let token = load_saved_token(&secret_store).map_err(err_to_string)?;
+    let token = load_saved_token(locale, &secret_store).map_err(err_to_string)?;
     let ssh_password = ssh_password_store(&app)
         .and_then(|store| store.get_secret())
         .map_err(err_to_string)?;
@@ -369,6 +443,7 @@ pub fn start_runtime(app: AppHandle, state: State<'_, AppState>) -> Result<Runti
         let _ = start_runtime_processes(
             shared_runtime,
             app_handle,
+            locale,
             runtime_target,
             &target_profile,
             &company_profile,
@@ -393,8 +468,8 @@ pub fn start_runtime(app: AppHandle, state: State<'_, AppState>) -> Result<Runti
 
 #[tauri::command]
 pub fn stop_runtime(app: AppHandle, state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
-    let status =
-        stop_runtime_processes(state.runtime.clone(), app.clone()).map_err(err_to_string)?;
+    let status = stop_runtime_processes(state.runtime.clone(), app.clone(), current_locale(&app))
+        .map_err(err_to_string)?;
     update_cached_runtime_status(&state, &status);
     let _ = app_menu::refresh_status_menu_from_state(&app);
     Ok(status)
@@ -413,21 +488,30 @@ pub fn stream_logs(state: State<'_, AppState>) -> Result<Vec<LogEntry>, String> 
 fn detect_environment_inner(
     app: &AppHandle,
     runtime: &SharedRuntimeState,
+    include_remote_update_check: bool,
 ) -> Result<EnvironmentSnapshot> {
     let settings = settings_store(app).and_then(|store| store.load())?;
+    let ui_preferences = ui_preferences_store(app)
+        .and_then(|store| store.load())
+        .map(|value| value.unwrap_or_default())?;
     let platform = current_platform()?;
     let target_profile = settings
         .as_ref()
         .map(|saved| saved.target_profile.clone())
         .unwrap_or_default();
     let runtime_target = default_runtime_target(platform);
-    let resolved = resolve_environment(runtime_target, &target_profile);
+    let resolved = resolve_environment(
+        runtime_target,
+        &target_profile,
+        include_remote_update_check,
+    );
     let token_state = inspect_token_state(token_store(app).and_then(|store| store.get_secret()));
 
     Ok(build_environment_snapshot(
         env::consts::OS,
         runtime_target,
         settings,
+        ui_preferences,
         snapshot_status(runtime),
         resolved,
         token_state,
@@ -437,8 +521,9 @@ fn detect_environment_inner(
 fn refresh_environment_snapshot(
     app: &AppHandle,
     state: &State<'_, AppState>,
+    include_remote_update_check: bool,
 ) -> Result<EnvironmentSnapshot> {
-    let snapshot = detect_environment_inner(app, &state.runtime)?;
+    let snapshot = detect_environment_inner(app, &state.runtime, include_remote_update_check)?;
     {
         let mut guard = state
             .environment_cache
@@ -460,9 +545,20 @@ fn update_cached_runtime_status(state: &State<'_, AppState>, status: &RuntimeSta
     }
 }
 
+fn update_cached_ui_preferences(state: &State<'_, AppState>, preferences: &UiPreferences) {
+    let mut guard = state
+        .environment_cache
+        .lock()
+        .expect("environment cache mutex poisoned");
+    if let Some(snapshot) = guard.as_mut() {
+        apply_ui_preferences_to_snapshot(snapshot, preferences.clone());
+    }
+}
+
 fn resolve_environment(
     runtime_target: RuntimeTarget,
     target_profile: &TargetProfile,
+    include_remote_update_check: bool,
 ) -> ResolvedEnvironment {
     let host_ssh_installed = command_available("ssh");
     let target_ssh_installed =
@@ -472,13 +568,17 @@ fn resolve_environment(
     let openclaw_version = openclaw_installed
         .then(|| read_openclaw_version(runtime_target.clone(), target_profile))
         .flatten();
-    let latest_openclaw_version =
-        read_latest_openclaw_version(runtime_target.clone(), target_profile);
-    let update_available = openclaw_version
-        .as_deref()
-        .zip(latest_openclaw_version.as_deref())
-        .map(|(installed, latest)| compare_versions(installed, latest))
-        .unwrap_or(false);
+    let latest_openclaw_version = if include_remote_update_check {
+        read_latest_openclaw_version(runtime_target.clone(), target_profile)
+    } else {
+        None
+    };
+    let update_available = include_remote_update_check
+        && openclaw_version
+            .as_deref()
+            .zip(latest_openclaw_version.as_deref())
+            .map(|(installed, latest)| compare_versions(installed, latest))
+            .unwrap_or(false);
     let wsl_status = match runtime_target {
         RuntimeTarget::MacNative => None,
         RuntimeTarget::WindowsWsl => Some(detect_wsl_status(target_profile)),
@@ -500,7 +600,7 @@ fn settings_store(app: &AppHandle) -> Result<JsonSettingsStore> {
     let path = app
         .path()
         .app_data_dir()
-        .context("无法获取应用数据目录")?
+        .context("Failed to resolve the app data directory")?
         .join("settings.json");
     Ok(JsonSettingsStore::new(path))
 }
@@ -509,16 +609,56 @@ fn token_store(app: &AppHandle) -> Result<LocalSecretStore> {
     let path = app
         .path()
         .app_data_dir()
-        .context("无法获取应用数据目录")?
+        .context("Failed to resolve the app data directory")?
         .join("gateway-token.txt");
     Ok(LocalSecretStore::new(path))
+}
+
+fn current_locale(app: &AppHandle) -> LocalePreference {
+    load_ui_preferences(app)
+        .ok()
+        .map(|preferences| preferences.locale)
+        .unwrap_or_default()
+}
+
+fn ui_preferences_store(app: &AppHandle) -> Result<JsonUiPreferencesStore> {
+    let path = app
+        .path()
+        .app_data_dir()
+        .context("Failed to resolve the app data directory")?
+        .join("ui-preferences.json");
+    Ok(JsonUiPreferencesStore::new(path))
+}
+
+pub(crate) fn load_ui_preferences(app: &AppHandle) -> Result<UiPreferences> {
+    ui_preferences_store(app)
+        .and_then(|store| store.load())
+        .map(|value| value.unwrap_or_default())
+}
+
+pub(crate) fn sync_main_window_appearance(
+    app: &AppHandle,
+    preferences: &UiPreferences,
+) -> Result<()> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+
+    window
+        .set_theme(window_theme_for_preference(preferences.theme))
+        .context("Failed to sync the native window theme")?;
+    window
+        .set_background_color(window_background_color_for_theme(preferences.theme))
+        .context("Failed to sync the native window background color")?;
+
+    Ok(())
 }
 
 fn ssh_password_store(app: &AppHandle) -> Result<LocalSecretStore> {
     let path = app
         .path()
         .app_data_dir()
-        .context("无法获取应用数据目录")?
+        .context("Failed to resolve the app data directory")?
         .join("ssh-password.txt");
     Ok(LocalSecretStore::new(path))
 }
@@ -527,6 +667,7 @@ fn build_environment_snapshot(
     os: &str,
     runtime_target: RuntimeTarget,
     settings: Option<PersistedSettings>,
+    ui_preferences: UiPreferences,
     mut runtime_status: RuntimeStatus,
     resolved: ResolvedEnvironment,
     token_state: TokenState,
@@ -554,15 +695,47 @@ fn build_environment_snapshot(
         has_saved_profile,
         token_status: token_state.status,
         token_status_message: token_state.message,
+        ui_preferences: ui_preferences.clone(),
         saved_settings: settings,
         runtime_status,
         install_recommendation: install_recommendation(
+            ui_preferences.locale,
             runtime_target,
             resolved.host_ssh_installed,
             resolved.target_ssh_installed,
             resolved.wsl_status.as_ref(),
         ),
         wsl_status: resolved.wsl_status,
+    }
+}
+
+fn apply_ui_preferences_to_snapshot(
+    snapshot: &mut EnvironmentSnapshot,
+    preferences: UiPreferences,
+) {
+    snapshot.ui_preferences = preferences.clone();
+    snapshot.install_recommendation = install_recommendation(
+        preferences.locale,
+        snapshot.runtime_target,
+        snapshot.host_ssh_installed,
+        snapshot.target_ssh_installed,
+        snapshot.wsl_status.as_ref(),
+    );
+}
+
+fn window_theme_for_preference(theme: ThemePreference) -> Option<Theme> {
+    match theme {
+        ThemePreference::Light => Some(Theme::Light),
+        ThemePreference::Dark => Some(Theme::Dark),
+        ThemePreference::System => None,
+    }
+}
+
+fn window_background_color_for_theme(theme: ThemePreference) -> Option<Color> {
+    match theme {
+        ThemePreference::Light => Some(Color(245, 247, 251, 255)),
+        ThemePreference::Dark => Some(Color(11, 18, 32, 255)),
+        ThemePreference::System => None,
     }
 }
 
@@ -584,6 +757,7 @@ fn inspect_token_state(result: Result<Option<String>>) -> TokenState {
 }
 
 fn persist_profile_atomic(
+    locale: LocalePreference,
     settings_store: &impl SettingsStoreAccess,
     token_store: &impl SecretStore,
     ssh_password_store: &impl SecretStore,
@@ -591,9 +765,9 @@ fn persist_profile_atomic(
     token: &str,
     ssh_password: &str,
 ) -> Result<()> {
-    validate_company_profile(&settings.company_profile)?;
-    validate_user_profile(&settings.user_profile)?;
-    validate_target_profile(&settings.target_profile)?;
+    validate_company_profile_with_locale(&settings.company_profile, locale)?;
+    validate_user_profile_with_locale(&settings.user_profile, locale)?;
+    validate_target_profile_with_locale(&settings.target_profile, locale)?;
 
     let previous_token = token_store.get_secret()?;
     let previous_ssh_password = ssh_password_store.get_secret()?;
@@ -605,14 +779,27 @@ fn persist_profile_atomic(
     if should_write_new_token {
         token_store.set_secret(trimmed_token)?;
     } else if previous_token.is_none() {
-        return Err(anyhow!("Token 不能为空"));
+        return Err(anyhow!(locale_text(
+            locale,
+            "Token 不能为空",
+            "Token cannot be empty"
+        )));
     }
 
     if should_write_new_ssh_password {
         if let Err(save_error) = ssh_password_store.set_secret(trimmed_ssh_password) {
             if should_write_new_token {
                 rollback_secret(token_store, previous_token.as_deref()).map_err(
-                    |rollback_error| anyhow!("{save_error}; token 回滚失败: {rollback_error}"),
+                    |rollback_error| {
+                        anyhow!(
+                            "{}",
+                            locale_owned(
+                                locale,
+                                format!("{save_error}; token 回滚失败: {rollback_error}"),
+                                format!("{save_error}; token rollback failed: {rollback_error}")
+                            )
+                        )
+                    },
                 )?;
             }
             return Err(save_error);
@@ -622,12 +809,28 @@ fn persist_profile_atomic(
     if let Err(save_error) = settings_store.save(settings) {
         if should_write_new_token {
             rollback_secret(token_store, previous_token.as_deref()).map_err(|rollback_error| {
-                anyhow!("{save_error}; token 回滚失败: {rollback_error}")
+                anyhow!(
+                    "{}",
+                    locale_owned(
+                        locale,
+                        format!("{save_error}; token 回滚失败: {rollback_error}"),
+                        format!("{save_error}; token rollback failed: {rollback_error}")
+                    )
+                )
             })?;
         }
         if should_write_new_ssh_password {
             rollback_secret(ssh_password_store, previous_ssh_password.as_deref()).map_err(
-                |rollback_error| anyhow!("{save_error}; SSH 密码回滚失败: {rollback_error}"),
+                |rollback_error| {
+                    anyhow!(
+                        "{}",
+                        locale_owned(
+                            locale,
+                            format!("{save_error}; SSH 密码回滚失败: {rollback_error}"),
+                            format!("{save_error}; SSH password rollback failed: {rollback_error}")
+                        )
+                    )
+                },
             )?;
         }
         return Err(save_error);
@@ -644,20 +847,32 @@ fn rollback_secret(secret_store: &impl SecretStore, previous_secret: Option<&str
     }
 }
 
-fn load_saved_settings(settings_store: &impl SettingsStoreAccess) -> Result<PersistedSettings> {
-    settings_store
-        .load()?
-        .ok_or_else(|| anyhow!("尚未保存 BizClaw 连接配置"))
+fn load_saved_settings(
+    locale: LocalePreference,
+    settings_store: &impl SettingsStoreAccess,
+) -> Result<PersistedSettings> {
+    settings_store.load()?.ok_or_else(|| {
+        if matches!(locale, LocalePreference::EnUs) {
+            anyhow!("BizClaw connection settings have not been saved yet")
+        } else {
+            anyhow!("尚未保存 BizClaw 连接配置")
+        }
+    })
 }
 
-fn load_saved_token(secret_store: &impl SecretStore) -> Result<String> {
-    secret_store
-        .get_secret()?
-        .ok_or_else(|| anyhow!("尚未保存 OPENCLAW_GATEWAY_TOKEN"))
+fn load_saved_token(locale: LocalePreference, secret_store: &impl SecretStore) -> Result<String> {
+    secret_store.get_secret()?.ok_or_else(|| {
+        if matches!(locale, LocalePreference::EnUs) {
+            anyhow!("OPENCLAW_GATEWAY_TOKEN has not been saved yet")
+        } else {
+            anyhow!("尚未保存 OPENCLAW_GATEWAY_TOKEN")
+        }
+    })
 }
 
 fn run_connection_test(
     app: &AppHandle,
+    locale: LocalePreference,
     runtime_target: RuntimeTarget,
     target_profile: &TargetProfile,
     company_profile: &CompanyProfile,
@@ -668,21 +883,38 @@ fn run_connection_test(
         app,
         ConnectionTestStep::SshTunnel,
         ConnectionTestEventStatus::Running,
-        format!("正在建立到 {} 的临时 SSH 隧道", company_profile.ssh_host),
+        locale_owned(
+            locale,
+            format!("正在建立到 {} 的临时 SSH 隧道", company_profile.ssh_host),
+            format!(
+                "Creating a temporary SSH tunnel to {}",
+                company_profile.ssh_host
+            ),
+        ),
     );
 
     let ssh_command = build_runtime_ssh_command(
+        locale,
         runtime_target,
         target_profile,
         company_profile,
         ssh_password,
     )?;
-    let mut ssh_child = spawn_command_spec(&ssh_command).context("无法启动 SSH 隧道")?;
+    let mut ssh_child = spawn_command_spec(&ssh_command, locale).context(locale_text(
+        locale,
+        "无法启动 SSH 隧道",
+        "Failed to start the SSH tunnel",
+    ))?;
 
     let result: Result<ConnectionTestResult> = (|| {
         thread::sleep(Duration::from_secs(2));
-        ensure_child_alive(&mut ssh_child, "SSH 隧道")?;
+        ensure_child_alive(
+            &mut ssh_child,
+            locale,
+            locale_text(locale, "SSH 隧道", "SSH tunnel"),
+        )?;
         wait_for_local_port_ready(
+            locale,
             company_profile.local_port,
             CONNECTION_TEST_TUNNEL_READY_TIMEOUT,
             CONNECTION_TEST_TUNNEL_POLL_INTERVAL,
@@ -692,34 +924,48 @@ fn run_connection_test(
             app,
             ConnectionTestStep::SshTunnel,
             ConnectionTestEventStatus::Success,
-            "SSH 隧道已建立".to_string(),
+            locale_text(locale, "SSH 隧道已建立", "SSH tunnel established").to_string(),
         );
         emit_connection_test_event(
             app,
             ConnectionTestStep::GatewayProbe,
             ConnectionTestEventStatus::Running,
-            "正在验证 Gateway 鉴权".to_string(),
+            locale_text(
+                locale,
+                "正在验证 Gateway 鉴权",
+                "Validating Gateway authentication",
+            )
+            .to_string(),
         );
 
-        let gateway_result = run_command_capture(&build_gateway_status_command(
-            runtime_target,
-            target_profile,
-            company_profile,
-            token,
-            CONNECTION_TEST_TIMEOUT_MS,
-        ))?;
+        let gateway_result = run_command_capture(
+            &build_gateway_status_command(
+                runtime_target,
+                target_profile,
+                company_profile,
+                token,
+                CONNECTION_TEST_TIMEOUT_MS,
+            ),
+            locale,
+        )?;
 
         if gateway_result.success {
             emit_connection_test_event(
                 app,
                 ConnectionTestStep::GatewayProbe,
                 ConnectionTestEventStatus::Success,
-                "Gateway 鉴权通过".to_string(),
+                locale_text(locale, "Gateway 鉴权通过", "Gateway authentication passed")
+                    .to_string(),
             );
             Ok(ConnectionTestResult {
                 success: true,
                 step: ConnectionTestStep::GatewayProbe,
-                summary: "SSH 隧道已建立，Gateway 鉴权通过。".into(),
+                summary: locale_text(
+                    locale,
+                    "SSH 隧道已建立，Gateway 鉴权通过。",
+                    "SSH tunnel established and Gateway authentication passed.",
+                )
+                .into(),
                 stdout: gateway_result.stdout,
                 stderr: gateway_result.stderr,
             })
@@ -728,19 +974,29 @@ fn run_connection_test(
                 app,
                 ConnectionTestStep::GatewayProbe,
                 ConnectionTestEventStatus::Error,
-                "Gateway 鉴权失败，请检查 Token、SSH 转发和远程 Gateway 状态。".to_string(),
+                locale_text(
+                    locale,
+                    "Gateway 鉴权失败，请检查 Token、SSH 转发和远程 Gateway 状态。",
+                    "Gateway authentication failed. Check the token, SSH forwarding, and remote Gateway status.",
+                )
+                .to_string(),
             );
             Ok(ConnectionTestResult {
                 success: false,
                 step: ConnectionTestStep::GatewayProbe,
-                summary: "Gateway 鉴权失败，请检查 Token、SSH 转发和远程 Gateway 状态。".into(),
+                summary: locale_text(
+                    locale,
+                    "Gateway 鉴权失败，请检查 Token、SSH 转发和远程 Gateway 状态。",
+                    "Gateway authentication failed. Check the token, SSH forwarding, and remote Gateway status.",
+                )
+                .into(),
                 stdout: gateway_result.stdout,
                 stderr: gateway_result.stderr,
             })
         }
     })();
 
-    let _ = kill_child(&mut ssh_child);
+    let _ = kill_child(&mut ssh_child, locale);
 
     match result {
         Ok(result) => Ok(result),
@@ -754,7 +1010,12 @@ fn run_connection_test(
             Ok(ConnectionTestResult {
                 success: false,
                 step: ConnectionTestStep::SshTunnel,
-                summary: "SSH 隧道建立失败，请检查 SSH 登录信息和端口转发配置。".into(),
+                summary: locale_text(
+                    locale,
+                    "SSH 隧道建立失败，请检查 SSH 登录信息和端口转发配置。",
+                    "Failed to create the SSH tunnel. Check the SSH credentials and port forwarding settings.",
+                )
+                .into(),
                 stdout: String::new(),
                 stderr: error.to_string(),
             })
@@ -763,6 +1024,7 @@ fn run_connection_test(
 }
 
 fn build_runtime_ssh_command(
+    locale: LocalePreference,
     runtime_target: RuntimeTarget,
     target_profile: &TargetProfile,
     company_profile: &CompanyProfile,
@@ -771,8 +1033,11 @@ fn build_runtime_ssh_command(
     match runtime_target {
         RuntimeTarget::MacNative => {
             if let Some(password) = ssh_password {
-                let askpass_program =
-                    std::env::current_exe().context("无法定位 SSH 密码辅助程序")?;
+                let askpass_program = std::env::current_exe().context(locale_text(
+                    locale,
+                    "无法定位 SSH 密码辅助程序",
+                    "Failed to locate the SSH password helper",
+                ))?;
                 return Ok(build_native_ssh_command(
                     company_profile,
                     Some((askpass_program.to_string_lossy().as_ref(), password)),
@@ -806,7 +1071,7 @@ fn build_gateway_status_command(
     }
 }
 
-fn spawn_command_spec(spec: &CommandSpec) -> Result<Child> {
+fn spawn_command_spec(spec: &CommandSpec, locale: LocalePreference) -> Result<Child> {
     let mut command = Command::new(&spec.program);
     command.args(&spec.args);
     command.stdin(Stdio::null());
@@ -814,18 +1079,28 @@ fn spawn_command_spec(spec: &CommandSpec) -> Result<Child> {
     for (key, value) in &spec.envs {
         command.env(key, value);
     }
-    command
-        .spawn()
-        .with_context(|| format!("启动命令失败: {}", spec.program))
+    command.spawn().with_context(|| {
+        format!(
+            "{}: {}",
+            locale_text(locale, "启动命令失败", "Failed to start command"),
+            spec.program
+        )
+    })
 }
 
-fn run_command_capture(spec: &CommandSpec) -> Result<CapturedOutput> {
+fn run_command_capture(spec: &CommandSpec, locale: LocalePreference) -> Result<CapturedOutput> {
     let output = Command::new(&spec.program)
         .args(&spec.args)
         .envs(spec.envs.iter().cloned())
         .stdin(Stdio::null())
         .output()
-        .with_context(|| format!("执行命令失败: {}", spec.program))?;
+        .with_context(|| {
+            format!(
+                "{}: {}",
+                locale_text(locale, "执行命令失败", "Failed to run command"),
+                spec.program
+            )
+        })?;
 
     Ok(CapturedOutput {
         success: output.status.success(),
@@ -834,20 +1109,36 @@ fn run_command_capture(spec: &CommandSpec) -> Result<CapturedOutput> {
     })
 }
 
-fn ensure_child_alive(child: &mut Child, label: &str) -> Result<()> {
+fn ensure_child_alive(child: &mut Child, locale: LocalePreference, label: &str) -> Result<()> {
     if let Some(status) = child.try_wait()? {
-        return Err(anyhow!("{label} 提前退出，状态码: {status}"));
+        return Err(anyhow!(
+            "{}",
+            locale_owned(
+                locale,
+                format!("{label} 提前退出，状态码: {status}"),
+                format!("{label} exited early with status {status}")
+            )
+        ));
     }
     Ok(())
 }
 
-fn kill_child(child: &mut Child) -> Result<()> {
-    child.kill().context("结束临时连接进程失败")?;
+fn kill_child(child: &mut Child, locale: LocalePreference) -> Result<()> {
+    child.kill().context(locale_text(
+        locale,
+        "结束临时连接进程失败",
+        "Failed to stop the temporary connection process",
+    ))?;
     let _ = child.wait();
     Ok(())
 }
 
-fn wait_for_local_port_ready(port: u16, max_wait: Duration, poll_interval: Duration) -> Result<()> {
+fn wait_for_local_port_ready(
+    locale: LocalePreference,
+    port: u16,
+    max_wait: Duration,
+    poll_interval: Duration,
+) -> Result<()> {
     let started = std::time::Instant::now();
     let address = SocketAddr::from(([127, 0, 0, 1], port));
 
@@ -855,7 +1146,14 @@ fn wait_for_local_port_ready(port: u16, max_wait: Duration, poll_interval: Durat
         match TcpStream::connect_timeout(&address, poll_interval) {
             Ok(_) => return Ok(()),
             Err(error) if started.elapsed() >= max_wait => {
-                return Err(anyhow!("本地 SSH 隧道端口 {} 未就绪: {}", port, error));
+                return Err(anyhow!(
+                    "{}",
+                    locale_owned(
+                        locale,
+                        format!("本地 SSH 隧道端口 {} 未就绪: {}", port, error),
+                        format!("Local SSH tunnel port {} is not ready: {}", port, error)
+                    )
+                ));
             }
             Err(_) => thread::sleep(poll_interval),
         }
@@ -886,6 +1184,7 @@ struct CapturedOutput {
 }
 
 fn install_recommendation(
+    locale: LocalePreference,
     runtime_target: RuntimeTarget,
     host_ssh_installed: bool,
     target_ssh_installed: bool,
@@ -894,24 +1193,48 @@ fn install_recommendation(
     match runtime_target {
         RuntimeTarget::MacNative => {
             if !host_ssh_installed {
-                "当前未检测到 macOS 自带的 ssh 命令，请先修复系统 OpenSSH 后再继续。".into()
+                if matches!(locale, LocalePreference::EnUs) {
+                    "macOS built-in ssh was not detected. Fix system OpenSSH before continuing."
+                        .into()
+                } else {
+                    "当前未检测到 macOS 自带的 ssh 命令，请先修复系统 OpenSSH 后再继续。".into()
+                }
             } else {
-                "推荐先使用官方安装脚本，失败后再回退到 npm / pnpm 全局安装。".into()
+                if matches!(locale, LocalePreference::EnUs) {
+                    "Prefer the official install script first, then fall back to a global npm / pnpm install if needed.".into()
+                } else {
+                    "推荐先使用官方安装脚本，失败后再回退到 npm / pnpm 全局安装。".into()
+                }
             }
         }
         RuntimeTarget::WindowsWsl => {
             if let Some(status) = wsl_status {
                 if !status.ready {
-                    return format!(
-                        "Windows 将通过 WSL 运行 OpenClaw；当前 {} 尚未就绪，可由 BizClaw 自动引导安装。",
-                        status.distro_name
-                    );
+                    return if matches!(locale, LocalePreference::EnUs) {
+                        format!(
+                            "Windows will run OpenClaw through WSL. {} is not ready yet, and BizClaw can bootstrap it automatically.",
+                            status.distro_name
+                        )
+                    } else {
+                        format!(
+                            "Windows 将通过 WSL 运行 OpenClaw；当前 {} 尚未就绪，可由 BizClaw 自动引导安装。",
+                            status.distro_name
+                        )
+                    };
                 }
             }
             if !target_ssh_installed {
-                "已检测到 WSL，但 Ubuntu 中缺少 OpenSSH，BizClaw 会在安装流程里补齐。".into()
+                if matches!(locale, LocalePreference::EnUs) {
+                    "WSL is available, but Ubuntu is missing OpenSSH. BizClaw will install it during setup.".into()
+                } else {
+                    "已检测到 WSL，但 Ubuntu 中缺少 OpenSSH，BizClaw 会在安装流程里补齐。".into()
+                }
             } else {
-                "Windows 版本固定通过 WSL Ubuntu 托管运行 OpenClaw Node 与 SSH 隧道。".into()
+                if matches!(locale, LocalePreference::EnUs) {
+                    "The Windows build always hosts OpenClaw Node and the SSH tunnel inside WSL Ubuntu.".into()
+                } else {
+                    "Windows 版本固定通过 WSL Ubuntu 托管运行 OpenClaw Node 与 SSH 隧道。".into()
+                }
             }
         }
     }
@@ -934,6 +1257,7 @@ fn start_install_or_update_task(
     let environment_cache = state.environment_cache.clone();
 
     thread::spawn(move || {
+        let locale = current_locale(&app_handle);
         let result = run_install_or_update(
             &app_handle,
             &operation_state,
@@ -962,6 +1286,7 @@ fn start_install_or_update_task(
                     OperationTaskPhase::Error
                 },
                 failure_result(
+                    locale,
                     kind,
                     OperationStep::Detect,
                     "task-error",
@@ -972,7 +1297,7 @@ fn start_install_or_update_task(
 
         emit_operation_status(&app_handle, &task_snapshot);
 
-        if let Ok(snapshot) = detect_environment_inner(&app_handle, &runtime_state) {
+        if let Ok(snapshot) = detect_environment_inner(&app_handle, &runtime_state, false) {
             {
                 let mut guard = environment_cache
                     .lock()
@@ -1008,6 +1333,7 @@ fn run_install_or_update(
     runtime_target: RuntimeTarget,
     target_profile: TargetProfile,
 ) -> Result<OperationResult> {
+    let locale = current_locale(app);
     let snapshot = update_step(operation_state, OperationStep::Detect);
     emit_operation_status(app, &snapshot);
     emit_operation_event(
@@ -1017,9 +1343,13 @@ fn run_install_or_update(
         OperationStep::Detect,
         OperationEventStatus::Running,
         OperationEventSource::System,
-        "正在检测目标运行环境",
+        locale_text(
+            locale,
+            "正在检测目标运行环境",
+            "Detecting the target runtime environment",
+        ),
     );
-    let mut resolved = resolve_environment(runtime_target.clone(), &target_profile);
+    let mut resolved = resolve_environment(runtime_target.clone(), &target_profile, false);
     emit_operation_event(
         app,
         Some(operation_state),
@@ -1027,21 +1357,26 @@ fn run_install_or_update(
         OperationStep::Detect,
         OperationEventStatus::Success,
         OperationEventSource::System,
-        "环境检测完成",
+        locale_text(locale, "环境检测完成", "Environment detection completed"),
     );
 
     if let Some(result) =
-        cancelled_result_if_requested(operation_state, kind, OperationStep::Detect)
+        cancelled_result_if_requested(locale, operation_state, kind, OperationStep::Detect)
     {
         return Ok(result);
     }
 
     if matches!(runtime_target, RuntimeTarget::MacNative) && !resolved.host_ssh_installed {
         return Ok(failure_result(
+            locale,
             kind,
             OperationStep::EnsureSsh,
             "missing-ssh",
-            "当前未检测到 macOS 的 ssh 命令，请先修复系统 OpenSSH 后再重试。",
+            locale_text(
+                locale,
+                "当前未检测到 macOS 的 ssh 命令，请先修复系统 OpenSSH 后再重试。",
+                "macOS built-in ssh was not detected. Fix system OpenSSH and try again.",
+            ),
         ));
     }
 
@@ -1056,6 +1391,7 @@ fn run_install_or_update(
             let bootstrap = run_single_plan(
                 app,
                 operation_state,
+                locale,
                 kind.clone(),
                 OperationStep::BootstrapWsl,
                 current_platform()?,
@@ -1064,6 +1400,7 @@ fn run_install_or_update(
             )?;
             if cancel_requested(operation_state) {
                 return Ok(cancelled_result(
+                    locale,
                     kind,
                     OperationStep::BootstrapWsl,
                     bootstrap.strategy,
@@ -1076,9 +1413,17 @@ fn run_install_or_update(
                 let follow_up = if bootstrap.stdout.to_lowercase().contains("restart")
                     || bootstrap.stderr.to_lowercase().contains("restart")
                 {
-                    "WSL 安装已启动，请在 Windows 重启并完成 Ubuntu 初始化后重新打开 BizClaw。"
+                    locale_text(
+                        locale,
+                        "WSL 安装已启动，请在 Windows 重启并完成 Ubuntu 初始化后重新打开 BizClaw。",
+                        "WSL installation has started. Restart Windows, finish Ubuntu initialization, and reopen BizClaw.",
+                    )
                 } else {
-                    "请完成 WSL / Ubuntu 初始化后，再回到 BizClaw 继续安装。"
+                    locale_text(
+                        locale,
+                        "请完成 WSL / Ubuntu 初始化后，再回到 BizClaw 继续安装。",
+                        "Finish WSL / Ubuntu initialization, then come back to BizClaw to continue the installation.",
+                    )
                 };
                 return Ok(OperationResult {
                     kind,
@@ -1089,10 +1434,10 @@ fn run_install_or_update(
                     stderr: bootstrap.stderr,
                     needs_elevation: bootstrap.needs_elevation,
                     manual_url: MANUAL_INSTALL_URL.into(),
-                    follow_up: follow_up.into(),
+                    follow_up: follow_up.to_string(),
                 });
             }
-            resolved = resolve_environment(runtime_target.clone(), &target_profile);
+            resolved = resolve_environment(runtime_target.clone(), &target_profile, false);
         }
     }
 
@@ -1102,6 +1447,7 @@ fn run_install_or_update(
         let ssh_result = run_single_plan(
             app,
             operation_state,
+            locale,
             kind.clone(),
             OperationStep::EnsureSsh,
             current_platform()?,
@@ -1110,6 +1456,7 @@ fn run_install_or_update(
         )?;
         if cancel_requested(operation_state) {
             return Ok(cancelled_result(
+                locale,
                 kind,
                 OperationStep::EnsureSsh,
                 ssh_result.strategy,
@@ -1127,15 +1474,19 @@ fn run_install_or_update(
                 stderr: ssh_result.stderr,
                 needs_elevation: ssh_result.needs_elevation,
                 manual_url: MANUAL_INSTALL_URL.into(),
-                follow_up:
-                    "请确认 Ubuntu 已完成初始化，且当前用户具备安装 openssh-client 的 sudo 权限。"
-                        .into(),
+                follow_up: locale_text(
+                    locale,
+                    "请确认 Ubuntu 已完成初始化，且当前用户具备安装 openssh-client 的 sudo 权限。",
+                    "Make sure Ubuntu initialization is complete and the current user has sudo permission to install openssh-client.",
+                )
+                .into(),
             });
         }
-        resolved = resolve_environment(runtime_target.clone(), &target_profile);
+        resolved = resolve_environment(runtime_target.clone(), &target_profile, false);
     }
 
     if matches!(kind, OperationKind::Update) {
+        resolved = resolve_environment(runtime_target.clone(), &target_profile, true);
         let snapshot = update_step(operation_state, OperationStep::CheckUpdate);
         emit_operation_status(app, &snapshot);
         emit_operation_event(
@@ -1145,14 +1496,23 @@ fn run_install_or_update(
             OperationStep::CheckUpdate,
             OperationEventStatus::Running,
             OperationEventSource::System,
-            "正在获取最新 OpenClaw 版本信息",
+            locale_text(
+                locale,
+                "正在获取最新 OpenClaw 版本信息",
+                "Loading the latest OpenClaw version information",
+            ),
         );
         if !resolved.openclaw_installed {
             return Ok(failure_result(
+                locale,
                 kind,
                 OperationStep::CheckUpdate,
                 "missing-openclaw",
-                "请先安装 OpenClaw，再执行更新。",
+                locale_text(
+                    locale,
+                    "请先安装 OpenClaw，再执行更新。",
+                    "Install OpenClaw before running an update.",
+                ),
             ));
         }
         if !resolved.update_available {
@@ -1163,7 +1523,11 @@ fn run_install_or_update(
                 OperationStep::CheckUpdate,
                 OperationEventStatus::Success,
                 OperationEventSource::System,
-                "当前已是最新版本，无需更新",
+                locale_text(
+                    locale,
+                    "当前已是最新版本，无需更新",
+                    "OpenClaw is already up to date",
+                ),
             );
             return Ok(OperationResult {
                 kind,
@@ -1174,7 +1538,12 @@ fn run_install_or_update(
                 stderr: String::new(),
                 needs_elevation: false,
                 manual_url: MANUAL_INSTALL_URL.into(),
-                follow_up: "当前已是最新版本。".into(),
+                follow_up: locale_text(
+                    locale,
+                    "当前已是最新版本。",
+                    "OpenClaw is already up to date.",
+                )
+                .into(),
             });
         }
         emit_operation_event(
@@ -1184,16 +1553,30 @@ fn run_install_or_update(
             OperationStep::CheckUpdate,
             OperationEventStatus::Success,
             OperationEventSource::System,
-            format!(
-                "发现新版本 {}",
-                resolved
-                    .latest_openclaw_version
-                    .clone()
-                    .unwrap_or_else(|| "未知版本".into())
+            locale_owned(
+                locale,
+                format!(
+                    "发现新版本 {}",
+                    resolved
+                        .latest_openclaw_version
+                        .clone()
+                        .unwrap_or_else(
+                            || locale_text(locale, "未知版本", "Unknown version").into()
+                        )
+                ),
+                format!(
+                    "New version found: {}",
+                    resolved
+                        .latest_openclaw_version
+                        .clone()
+                        .unwrap_or_else(
+                            || locale_text(locale, "未知版本", "Unknown version").into()
+                        )
+                ),
             ),
         );
         if let Some(result) =
-            cancelled_result_if_requested(operation_state, kind, OperationStep::CheckUpdate)
+            cancelled_result_if_requested(locale, operation_state, kind, OperationStep::CheckUpdate)
         {
             return Ok(result);
         }
@@ -1207,7 +1590,12 @@ fn run_install_or_update(
             stderr: String::new(),
             needs_elevation: false,
             manual_url: MANUAL_INSTALL_URL.into(),
-            follow_up: "已检测到 OpenClaw，跳过安装。".into(),
+            follow_up: locale_text(
+                locale,
+                "已检测到 OpenClaw，跳过安装。",
+                "OpenClaw is already detected. Skipping installation.",
+            )
+            .into(),
         });
     }
 
@@ -1236,13 +1624,14 @@ fn run_install_or_update(
 
     let mut last_result = None;
     for plan in plans {
-        if let Some(result) = cancelled_result_if_requested(operation_state, kind, step) {
+        if let Some(result) = cancelled_result_if_requested(locale, operation_state, kind, step) {
             return Ok(result);
         }
 
         let result = run_single_plan(
             app,
             operation_state,
+            locale,
             kind.clone(),
             step.clone(),
             platform,
@@ -1266,14 +1655,25 @@ fn run_install_or_update(
                 needs_elevation: result.needs_elevation,
                 manual_url: MANUAL_INSTALL_URL.into(),
                 follow_up: if matches!(kind, OperationKind::Update) {
-                    "OpenClaw 更新完成，请重新检测版本或直接启动连接。".into()
+                    locale_text(
+                        locale,
+                        "OpenClaw 更新完成，请重新检测版本或直接启动连接。",
+                        "OpenClaw update completed. Refresh the version check or start the connection now.",
+                    )
+                    .into()
                 } else {
-                    "OpenClaw 安装完成，请继续保存连接并启动托管。".into()
+                    locale_text(
+                        locale,
+                        "OpenClaw 安装完成，请继续保存连接并启动托管。",
+                        "OpenClaw installation completed. Save the connection settings and start the hosted runtime.",
+                    )
+                    .into()
                 },
             });
         }
         if cancelled {
             return Ok(cancelled_result(
+                locale,
                 kind,
                 step,
                 result.strategy,
@@ -1288,7 +1688,7 @@ fn run_install_or_update(
         strategy: "unknown".into(),
         success: false,
         stdout: String::new(),
-        stderr: "安装未执行。".into(),
+        stderr: locale_text(locale, "安装未执行。", "Installation did not run.").into(),
         needs_elevation: false,
     });
     Ok(OperationResult {
@@ -1300,7 +1700,12 @@ fn run_install_or_update(
         stderr: result.stderr,
         needs_elevation: result.needs_elevation,
         manual_url: MANUAL_INSTALL_URL.into(),
-        follow_up: "操作未完成，请查看输出后重试，或改用官方手动安装文档。".into(),
+        follow_up: locale_text(
+            locale,
+            "操作未完成，请查看输出后重试，或改用官方手动安装文档。",
+            "The action did not complete. Check the output and try again, or use the official manual installation guide.",
+        )
+        .into(),
     })
 }
 
@@ -1321,24 +1726,36 @@ fn should_treat_plan_as_success(
     matches!(kind, OperationKind::Install) && openclaw_available
 }
 
-fn cancelled_follow_up(kind: OperationKind) -> &'static str {
+fn cancelled_follow_up(locale: LocalePreference, kind: OperationKind) -> &'static str {
     match kind {
-        OperationKind::Install => "安装已停止。",
-        OperationKind::Update => "更新已停止。",
-        OperationKind::CheckUpdate => "检查更新已停止。",
+        OperationKind::Install => locale_text(locale, "安装已停止。", "Installation stopped."),
+        OperationKind::Update => locale_text(locale, "更新已停止。", "Update stopped."),
+        OperationKind::CheckUpdate => {
+            locale_text(locale, "检查更新已停止。", "Update check stopped.")
+        }
     }
 }
 
 fn cancelled_result_if_requested(
+    locale: LocalePreference,
     operation_state: &SharedOperationState,
     kind: OperationKind,
     step: OperationStep,
 ) -> Option<OperationResult> {
-    cancel_requested(operation_state)
-        .then(|| cancelled_result(kind, step, "cancelled", String::new(), String::new()))
+    cancel_requested(operation_state).then(|| {
+        cancelled_result(
+            locale,
+            kind,
+            step,
+            "cancelled",
+            String::new(),
+            String::new(),
+        )
+    })
 }
 
 fn cancelled_result(
+    locale: LocalePreference,
     kind: OperationKind,
     step: OperationStep,
     strategy: impl Into<String>,
@@ -1354,11 +1771,12 @@ fn cancelled_result(
         stderr,
         needs_elevation: false,
         manual_url: MANUAL_INSTALL_URL.into(),
-        follow_up: cancelled_follow_up(kind).into(),
+        follow_up: cancelled_follow_up(locale, kind).into(),
     }
 }
 
 fn failure_result(
+    _locale: LocalePreference,
     kind: OperationKind,
     step: OperationStep,
     strategy: &str,
@@ -1380,13 +1798,21 @@ fn failure_result(
 fn run_single_plan(
     app: &AppHandle,
     operation_state: &SharedOperationState,
+    locale: LocalePreference,
     kind: OperationKind,
     step: OperationStep,
     platform: Platform,
     allow_elevation: bool,
     plan: &InstallPlan,
 ) -> Result<StreamedPlanResult> {
-    let result = execute_plan_streaming(app, operation_state, kind.clone(), step.clone(), plan)?;
+    let result = execute_plan_streaming(
+        app,
+        operation_state,
+        locale,
+        kind.clone(),
+        step.clone(),
+        plan,
+    )?;
     if cancel_requested(operation_state)
         || result.success
         || !result.needs_elevation
@@ -1396,7 +1822,7 @@ fn run_single_plan(
     }
 
     if let Some(elevated_plan) = elevated_install_plan(plan, platform) {
-        return execute_plan_streaming(app, operation_state, kind, step, &elevated_plan);
+        return execute_plan_streaming(app, operation_state, locale, kind, step, &elevated_plan);
     }
 
     Ok(result)
@@ -1405,6 +1831,7 @@ fn run_single_plan(
 fn execute_plan_streaming(
     app: &AppHandle,
     operation_state: &SharedOperationState,
+    locale: LocalePreference,
     kind: OperationKind,
     step: OperationStep,
     plan: &InstallPlan,
@@ -1416,7 +1843,11 @@ fn execute_plan_streaming(
         step.clone(),
         OperationEventStatus::Running,
         OperationEventSource::System,
-        format!("开始执行 {}", plan.strategy),
+        locale_owned(
+            locale,
+            format!("开始执行 {}", plan.strategy),
+            format!("Starting {}", plan.strategy),
+        ),
     );
 
     let mut command = Command::new(&plan.program);
@@ -1427,9 +1858,13 @@ fn execute_plan_streaming(
         command.env(key, value);
     }
 
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("执行命令失败: {}", plan.program))?;
+    let mut child = command.spawn().with_context(|| {
+        format!(
+            "{}: {}",
+            locale_text(locale, "执行命令失败", "Failed to run command"),
+            plan.program
+        )
+    })?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     attach_child(operation_state, child);
@@ -1528,11 +1963,23 @@ fn execute_plan_streaming(
         },
         OperationEventSource::System,
         if cancelled {
-            format!("{} 已停止", plan.strategy)
+            locale_owned(
+                locale,
+                format!("{} 已停止", plan.strategy),
+                format!("{} stopped", plan.strategy),
+            )
         } else if success {
-            format!("{} 执行完成", plan.strategy)
+            locale_owned(
+                locale,
+                format!("{} 执行完成", plan.strategy),
+                format!("{} completed", plan.strategy),
+            )
         } else {
-            format!("{} 执行失败，退出状态 {}", plan.strategy, status)
+            locale_owned(
+                locale,
+                format!("{} 执行失败，退出状态 {}", plan.strategy, status),
+                format!("{} failed with exit status {}", plan.strategy, status),
+            )
         },
     );
 
@@ -1600,17 +2047,20 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use anyhow::{anyhow, Result};
+    use tauri::{window::Color, Theme};
 
     use super::{
-        build_environment_snapshot, cancelled_follow_up, inspect_token_state, load_saved_token,
-        persist_profile_atomic, should_treat_plan_as_success, ResolvedEnvironment, RuntimePhase,
-        RuntimeStatus, SettingsStoreAccess, TokenState,
+        apply_ui_preferences_to_snapshot, build_environment_snapshot, cancelled_follow_up,
+        inspect_token_state, load_saved_token, persist_profile_atomic,
+        should_treat_plan_as_success, window_background_color_for_theme,
+        window_theme_for_preference, ResolvedEnvironment, RuntimePhase, RuntimeStatus,
+        SettingsStoreAccess, TokenState,
     };
     use crate::{
         secret_store::{MemorySecretStore, SecretStore},
         types::{
-            CompanyProfile, OperationKind, PersistedSettings, RuntimeTarget, TargetProfile,
-            TokenStatus, UserProfile, WslStatus,
+            CompanyProfile, LocalePreference, OperationKind, PersistedSettings, RuntimeTarget,
+            TargetProfile, TokenStatus, UiPreferences, UserProfile, WslStatus,
         },
     };
 
@@ -1658,6 +2108,7 @@ mod tests {
             "macos",
             RuntimeTarget::MacNative,
             Some(sample_settings()),
+            UiPreferences::default(),
             RuntimeStatus::default(),
             ResolvedEnvironment {
                 runtime_target: RuntimeTarget::MacNative,
@@ -1694,6 +2145,7 @@ mod tests {
             "windows",
             RuntimeTarget::WindowsWsl,
             Some(sample_settings()),
+            UiPreferences::default(),
             RuntimeStatus::default(),
             ResolvedEnvironment {
                 runtime_target: RuntimeTarget::WindowsWsl,
@@ -1752,6 +2204,7 @@ mod tests {
     fn atomic_save_stops_before_writing_settings_when_token_write_fails() {
         let settings_store = FakeSettingsStore::default();
         let error = persist_profile_atomic(
+            LocalePreference::ZhCn,
             &settings_store,
             &FailingSecretStore,
             &MemorySecretStore::default(),
@@ -1784,6 +2237,7 @@ mod tests {
         };
 
         let error = persist_profile_atomic(
+            LocalePreference::EnUs,
             &settings_store,
             &token_store,
             &ssh_password_store,
@@ -1812,6 +2266,7 @@ mod tests {
         ssh_password_store.set_secret("saved-password").unwrap();
 
         persist_profile_atomic(
+            LocalePreference::ZhCn,
             &FakeSettingsStore::default(),
             &token_store,
             &ssh_password_store,
@@ -1829,7 +2284,8 @@ mod tests {
 
     #[test]
     fn load_saved_token_requires_existing_secret() {
-        let error = load_saved_token(&MemorySecretStore::default()).unwrap_err();
+        let error =
+            load_saved_token(LocalePreference::ZhCn, &MemorySecretStore::default()).unwrap_err();
 
         assert!(error.to_string().contains("OPENCLAW_GATEWAY_TOKEN"));
     }
@@ -1862,8 +2318,83 @@ mod tests {
             true,
             true,
         ));
-        assert_eq!(cancelled_follow_up(OperationKind::Install), "安装已停止。");
-        assert_eq!(cancelled_follow_up(OperationKind::Update), "更新已停止。");
+        assert_eq!(
+            cancelled_follow_up(LocalePreference::ZhCn, OperationKind::Install),
+            "安装已停止。"
+        );
+        assert_eq!(
+            cancelled_follow_up(LocalePreference::EnUs, OperationKind::Update),
+            "Update stopped."
+        );
+    }
+
+    #[test]
+    fn applying_ui_preferences_updates_snapshot_locale_and_recommendation() {
+        let mut snapshot = build_environment_snapshot(
+            "windows",
+            RuntimeTarget::WindowsWsl,
+            Some(sample_settings()),
+            UiPreferences::default(),
+            RuntimeStatus::default(),
+            ResolvedEnvironment {
+                runtime_target: RuntimeTarget::WindowsWsl,
+                host_ssh_installed: true,
+                target_ssh_installed: false,
+                openclaw_installed: false,
+                openclaw_version: None,
+                latest_openclaw_version: None,
+                update_available: false,
+                wsl_status: Some(WslStatus {
+                    available: true,
+                    distro_name: "Ubuntu".into(),
+                    distro_installed: true,
+                    ready: true,
+                    needs_reboot: false,
+                    message: None,
+                }),
+            },
+            TokenState {
+                status: TokenStatus::Missing,
+                message: None,
+            },
+        );
+
+        apply_ui_preferences_to_snapshot(
+            &mut snapshot,
+            UiPreferences {
+                theme: crate::types::ThemePreference::Dark,
+                locale: LocalePreference::EnUs,
+            },
+        );
+
+        assert_eq!(snapshot.ui_preferences.locale, LocalePreference::EnUs);
+        assert_eq!(
+            snapshot.install_recommendation,
+            "WSL is available, but Ubuntu is missing OpenSSH. BizClaw will install it during setup."
+        );
+    }
+
+    #[test]
+    fn system_theme_maps_to_native_follow_system_behavior() {
+        assert_eq!(window_theme_for_preference(crate::types::ThemePreference::Light), Some(Theme::Light));
+        assert_eq!(window_theme_for_preference(crate::types::ThemePreference::Dark), Some(Theme::Dark));
+        assert_eq!(window_theme_for_preference(crate::types::ThemePreference::System), None);
+    }
+
+    #[test]
+    fn dark_theme_uses_deep_window_background_color() {
+        assert_eq!(
+            window_background_color_for_theme(crate::types::ThemePreference::Dark),
+            Some(Color(11, 18, 32, 255))
+        );
+        assert_eq!(
+            window_background_color_for_theme(crate::types::ThemePreference::Light),
+            Some(Color(245, 247, 251, 255))
+        );
+        assert_eq!(
+            window_background_color_for_theme(crate::types::ThemePreference::System),
+            None
+        );
     }
 
     fn sample_settings() -> PersistedSettings {

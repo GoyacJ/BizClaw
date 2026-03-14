@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   buildOperationsSummary,
@@ -8,14 +8,30 @@ import {
   startRuntimeDisabledReason,
   tokenStatusLabel,
 } from './runtime-view'
+import { setAppLocale } from './i18n'
 import type { EnvironmentSnapshot, OperationResult, OperationTaskSnapshot } from '@/types'
 
 describe('runtime view helpers', () => {
+  afterEach(() => {
+    setAppLocale('zh-CN')
+  })
+
   it('renders the runtime target and operation step labels', () => {
     expect(runtimeTargetLabel('macNative')).toBe('macOS 本机')
     expect(runtimeTargetLabel('windowsWsl')).toBe('Windows WSL')
     expect(operationStepLabel('bootstrapWsl')).toBe('WSL 初始化')
     expect(operationTaskPhaseLabel('cancelling')).toBe('停止中')
+  })
+
+  it('renders helper labels in English when the locale changes', () => {
+    setAppLocale('en-US')
+
+    expect(runtimeTargetLabel('macNative')).toBe('macOS')
+    expect(operationStepLabel('bootstrapWsl')).toBe('Initialize WSL')
+    expect(operationTaskPhaseLabel('cancelling')).toBe('Stopping')
+    expect(tokenStatusLabel(createSnapshot({
+      tokenStatus: 'saved',
+    }))).toBe('Token saved')
   })
 
   it('marks operations summary as update-ready when a newer version exists', () => {
@@ -138,6 +154,10 @@ function createSnapshot(
     hasSavedProfile: false,
     tokenStatus: 'missing',
     tokenStatusMessage: null,
+    uiPreferences: {
+      theme: 'light',
+      locale: 'zh-CN',
+    },
     savedSettings: null,
     runtimeStatus: {
       phase: 'checking',

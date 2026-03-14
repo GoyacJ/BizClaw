@@ -4,6 +4,10 @@ import { check } from '@tauri-apps/plugin-updater'
 
 const missingReleaseManifestPattern = /Could not fetch a valid release JSON from the remote/iu
 
+function canUseTauriPlugins() {
+  return typeof (globalThis as { __TAURI_INTERNALS__?: { invoke?: unknown } }).__TAURI_INTERNALS__?.invoke === 'function'
+}
+
 export interface BizClawUpdateDownloadStartedEvent {
   event: 'Started'
   data: {
@@ -37,6 +41,9 @@ export interface PendingBizClawUpdate {
 }
 
 export async function getCurrentBizClawVersion() {
+  if (!canUseTauriPlugins()) {
+    return null
+  }
   return getVersion()
 }
 
@@ -51,6 +58,9 @@ export function describeBizClawUpdaterError(error: unknown) {
 }
 
 export async function checkForBizClawUpdate(): Promise<PendingBizClawUpdate | null> {
+  if (!canUseTauriPlugins()) {
+    return null
+  }
   const update = await check()
   if (!update) {
     return null
@@ -65,5 +75,8 @@ export async function checkForBizClawUpdate(): Promise<PendingBizClawUpdate | nu
 }
 
 export async function relaunchBizClaw() {
+  if (!canUseTauriPlugins()) {
+    return
+  }
   await relaunch()
 }

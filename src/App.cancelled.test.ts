@@ -5,6 +5,7 @@ import type { EnvironmentSnapshot, OperationTaskSnapshot } from '@/types'
 
 vi.mock('@/lib/runtime-view', () => ({
   operationStepLabel: (step: string) => step,
+  operationTaskPhaseLabel: (phase: string) => phase,
   phaseLabel: (phase: string) => phase,
 }))
 
@@ -21,6 +22,10 @@ vi.mock('@/lib/use-app-model', () => {
     hasSavedProfile: true,
     tokenStatus: 'saved',
     tokenStatusMessage: null,
+    uiPreferences: {
+      theme: 'light',
+      locale: 'zh-CN',
+    },
     savedSettings: null,
     runtimeStatus: {
       phase: 'configured',

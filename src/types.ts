@@ -10,6 +10,14 @@ export type RuntimePhase =
 
 export type RuntimeTarget = 'macNative' | 'windowsWsl'
 
+export type ThemePreference = 'light' | 'dark' | 'system'
+export type LocalePreference = 'zh-CN' | 'en-US'
+
+export interface UiPreferences {
+  theme: ThemePreference
+  locale: LocalePreference
+}
+
 export interface CompanyProfile {
   sshHost: string
   sshUser: string
@@ -62,6 +70,7 @@ export interface EnvironmentSnapshot {
   hasSavedProfile: boolean
   tokenStatus: 'saved' | 'missing' | 'error'
   tokenStatusMessage: string | null
+  uiPreferences: UiPreferences
   savedSettings: PersistedSettings | null
   runtimeStatus: RuntimeStatus
   installRecommendation: string

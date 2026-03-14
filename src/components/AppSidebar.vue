@@ -10,20 +10,28 @@ const props = defineProps<{
   sections: readonly SidebarSection[]
   activeSection: string
   collapsed: boolean
+  pinnedCollapsed: boolean
 }>()
 
 const emit = defineEmits<{
   selectSection: [sectionKey: string]
   toggleCollapse: []
+  hoverChange: [hovering: boolean]
 }>()
 
 function sidebarToggleLabel() {
-  return translate(props.collapsed ? 'nav.expandSidebar' : 'nav.collapseSidebar')
+  return translate(props.pinnedCollapsed ? 'nav.expandSidebar' : 'nav.collapseSidebar')
 }
 </script>
 
 <template>
-  <aside class="sidebar surface-card" :data-collapsed="String(props.collapsed)">
+  <aside
+    class="sidebar surface-card"
+    :data-collapsed="String(props.collapsed)"
+    :data-hover-expanded="String(props.pinnedCollapsed && !props.collapsed)"
+    @mouseenter="emit('hoverChange', true)"
+    @mouseleave="emit('hoverChange', false)"
+  >
     <div class="brand-panel brand-panel--minimal">
       <button
         class="sidebar-toggle"

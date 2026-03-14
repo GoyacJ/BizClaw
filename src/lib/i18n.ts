@@ -141,6 +141,10 @@ const messages = {
       title: '最近日志',
       count: '{count} 条',
     },
+    statusBar: {
+      latestLog: '最新日志',
+      noRecentLog: '暂无最新日志',
+    },
     settings: {
       appearanceEyebrow: '外观',
       appearanceTitle: '主题',
@@ -421,6 +425,10 @@ const messages = {
       eyebrow: 'Runtime Log',
       title: 'Recent Logs',
       count: '{count} entries',
+    },
+    statusBar: {
+      latestLog: 'Latest Log',
+      noRecentLog: 'No recent log',
     },
     settings: {
       appearanceEyebrow: 'Appearance',

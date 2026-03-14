@@ -16,6 +16,8 @@ describe('shell layout styles', () => {
 
   it('pins the status bar to the bottom as a compact project-style strip', () => {
     expect(styles).toMatch(/\.status-bar\s*\{[^}]*position:\s*fixed;[^}]*bottom:\s*0;[^}]*min-height:\s*var\(--status-bar-height\);/s)
+    expect(styles).toMatch(/\.status-bar-latest-log\s*\{[^}]*flex:\s*1\s+1\s+320px;[^}]*min-width:\s*0;/s)
+    expect(styles).toMatch(/\.status-bar-statuses\s*\{[^}]*margin-left:\s*auto;[^}]*justify-content:\s*flex-end;/s)
     expect(styles).toMatch(/\.status-bar-item\s*\{[^}]*display:\s*inline-flex;[^}]*padding:\s*4px\s*9px;[^}]*border-radius:\s*999px;/s)
     expect(styles).toMatch(/\.status-bar-item-label\s*\{[^}]*font-size:\s*0\.68rem;/s)
     expect(styles).toMatch(/\.status-indicator\s*\{[^}]*width:\s*10px;[^}]*height:\s*10px;[^}]*border-radius:\s*999px;/s)

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
 import AppConnectionSection from './components/AppConnectionSection.vue'
 import AppInstallSection from './components/AppInstallSection.vue'
@@ -88,13 +88,40 @@ const sections = computed(() => ([
 
 const sectionTitle = computed(() => sections.value.find((item) => item.key === activeSection.value)?.label ?? translate('nav.overview'))
 const sidebarCollapsed = computed(() => uiPreferences.value.sidebarCollapsed)
+const sidebarHoverExpanded = ref(false)
+const sidebarDisplayCollapsed = computed(() => sidebarCollapsed.value && !sidebarHoverExpanded.value)
+const latestLogSummary = computed(() => {
+  const latestLog = logs.value[logs.value.length - 1]
+
+  if (!latestLog) {
+    return translate('statusBar.noRecentLog')
+  }
+
+  const sourceLabel = latestLog.source === 'stdout' || latestLog.source === 'stderr'
+    ? translate(`common.${latestLog.source}`)
+    : latestLog.source.toUpperCase()
+  const message = latestLog.message.replace(/\s+/g, ' ').trim()
+
+  return `${sourceLabel} · ${message || latestLog.level.toUpperCase()}`
+})
+const latestLogTitle = computed(() => latestLogSummary.value)
 
 const selectSection = (sectionKey: string) => {
   activeSection.value = sectionKey as typeof activeSection.value
 }
 
 const toggleSidebarCollapsed = () => {
+  sidebarHoverExpanded.value = false
   void persistSidebarCollapsed(!sidebarCollapsed.value)
+}
+
+const setSidebarHoverState = (hovering: boolean) => {
+  if (!sidebarCollapsed.value) {
+    sidebarHoverExpanded.value = false
+    return
+  }
+
+  sidebarHoverExpanded.value = hovering
 }
 
 const goInstall = () => {
@@ -233,13 +260,15 @@ function connectionStepLabel(status: ConnectionTestModalStep['status']) {
 </script>
 
 <template>
-  <main class="ops-shell" :data-sidebar-collapsed="String(sidebarCollapsed)">
+  <main class="ops-shell" :data-sidebar-collapsed="String(sidebarDisplayCollapsed)">
     <AppSidebar
       :sections="sections"
       :active-section="activeSection"
-      :collapsed="sidebarCollapsed"
+      :collapsed="sidebarDisplayCollapsed"
+      :pinned-collapsed="sidebarCollapsed"
       @select-section="selectSection"
       @toggle-collapse="toggleSidebarCollapsed"
+      @hover-change="setSidebarHoverState"
     />
 
     <section class="workspace">
@@ -281,7 +310,11 @@ function connectionStepLabel(status: ConnectionTestModalStep['status']) {
       </KeepAlive>
     </section>
 
-    <AppStatusBar :status-items="statusItems" />
+    <AppStatusBar
+      :latest-log-summary="latestLogSummary"
+      :latest-log-title="latestLogTitle"
+      :status-items="statusItems"
+    />
   </main>
 
   <Teleport to="body">

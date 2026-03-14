@@ -843,6 +843,40 @@ h3 {
   box-shadow: 0 -10px 24px rgba(32, 52, 89, 0.08);
 }
 
+.status-bar-latest-log {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.status-bar-latest-log-label {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.status-bar-latest-log-message {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.78rem;
+}
+
+.status-bar-statuses {
+  display: flex;
+  flex-wrap: wrap;
+  margin-left: auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px 10px;
+}
+
 .status-bar-item {
   display: inline-flex;
   align-items: center;
@@ -1028,6 +1062,14 @@ h3 {
 
   .status-bar-item {
     padding-right: 8px;
+  }
+
+  .status-bar-latest-log {
+    flex-basis: 100%;
+  }
+
+  .status-bar-statuses {
+    width: 100%;
   }
 
   .operation-list li,

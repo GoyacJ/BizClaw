@@ -319,6 +319,44 @@ describe('App operations center', () => {
     expect(firstNavButton?.title).toBe('概览')
   })
 
+  it('temporarily expands a collapsed sidebar while hovered without changing the saved preference', async () => {
+    mockUiPreferences.sidebarCollapsed = true
+    uiPreferencesRef.value = {
+      ...uiPreferencesRef.value,
+      sidebarCollapsed: true,
+    }
+
+    const { default: App } = await import('./App.vue')
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+
+    app = createApp(App)
+    app.mount(host)
+    await nextTick()
+
+    const shell = host.querySelector('main.ops-shell')
+    const sidebar = host.querySelector<HTMLElement>('.sidebar')
+
+    expect(shell?.getAttribute('data-sidebar-collapsed')).toBe('true')
+    expect(sidebar?.getAttribute('data-collapsed')).toBe('true')
+    expect(host.querySelector('.nav-button-label')).toBeNull()
+
+    sidebar?.dispatchEvent(new MouseEvent('mouseenter'))
+    await nextTick()
+
+    expect(setSidebarCollapsedMock).not.toHaveBeenCalled()
+    expect(shell?.getAttribute('data-sidebar-collapsed')).toBe('false')
+    expect(sidebar?.getAttribute('data-collapsed')).toBe('false')
+    expect(host.querySelector('.nav-button-label')?.textContent).toBe('概览')
+
+    sidebar?.dispatchEvent(new MouseEvent('mouseleave'))
+    await nextTick()
+
+    expect(shell?.getAttribute('data-sidebar-collapsed')).toBe('true')
+    expect(sidebar?.getAttribute('data-collapsed')).toBe('true')
+  })
+
   it('shows WSL distro and SSH password in advanced connection settings', async () => {
     const { default: App } = await import('./App.vue')
 
@@ -463,6 +501,30 @@ describe('App operations center', () => {
     expect(dots).toHaveLength(4)
     expect(statusBar?.textContent).not.toContain('未连接')
     expect(host.querySelector('.status-bar-item[data-tone="neutral"] .status-indicator')?.getAttribute('title')).toBe('未连接')
+  })
+
+  it('shows the latest log summary on the left and keeps status items grouped on the right', async () => {
+    const { default: App } = await import('./App.vue')
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+
+    app = createApp(App)
+    app.mount(host)
+    await nextTick()
+
+    const statusBar = host.querySelector('.status-bar')
+    const latestLog = host.querySelector('.status-bar-latest-log')
+    const statuses = host.querySelector('.status-bar-statuses')
+
+    expect(statusBar?.firstElementChild).toBe(latestLog)
+    expect(statusBar?.lastElementChild).toBe(statuses)
+    expect(latestLog?.textContent).toContain('最新日志')
+    expect(latestLog?.textContent).toContain('SYSTEM')
+    expect(latestLog?.textContent).toContain('ready')
+    expect(statuses?.querySelectorAll('.status-bar-item')).toHaveLength(4)
+    expect(statuses?.textContent).toContain('Token')
+    expect(statuses?.textContent).toContain('Gateway')
   })
 
   it('keeps the runtime page focused on logs only while install work can continue in background', async () => {

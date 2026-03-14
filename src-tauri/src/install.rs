@@ -28,10 +28,25 @@ pub fn current_platform() -> Result<Platform> {
     }
 }
 
-pub fn default_runtime_target(platform: Platform) -> RuntimeTarget {
+pub fn default_install_target(platform: Platform) -> RuntimeTarget {
     match platform {
         Platform::MacOs => RuntimeTarget::MacNative,
         Platform::Windows => RuntimeTarget::WindowsWsl,
+    }
+}
+
+pub fn preferred_windows_runtime_target(host_openclaw_installed: bool) -> RuntimeTarget {
+    if host_openclaw_installed {
+        RuntimeTarget::WindowsNative
+    } else {
+        RuntimeTarget::WindowsWsl
+    }
+}
+
+pub fn resolve_runtime_target(platform: Platform, _target_profile: &TargetProfile) -> RuntimeTarget {
+    match platform {
+        Platform::MacOs => RuntimeTarget::MacNative,
+        Platform::Windows => preferred_windows_runtime_target(command_available("openclaw")),
     }
 }
 
@@ -45,7 +60,7 @@ pub fn target_command_available(
     name: &str,
 ) -> bool {
     match target {
-        RuntimeTarget::MacNative => command_available(name),
+        RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => command_available(name),
         RuntimeTarget::WindowsWsl => {
             let status = detect_wsl_status(target_profile);
             status.ready
@@ -77,10 +92,11 @@ pub fn official_install_plan(platform: Platform) -> InstallPlan {
 pub fn official_install_plan_for_target(
     target: RuntimeTarget,
     target_profile: &TargetProfile,
-) -> InstallPlan {
+) -> Option<InstallPlan> {
     match target {
-        RuntimeTarget::MacNative => official_install_plan(Platform::MacOs),
-        RuntimeTarget::WindowsWsl => wsl_openclaw_install_plan(target_profile),
+        RuntimeTarget::MacNative => Some(official_install_plan(Platform::MacOs)),
+        RuntimeTarget::WindowsNative => None,
+        RuntimeTarget::WindowsWsl => Some(wsl_openclaw_install_plan(target_profile)),
     }
 }
 
@@ -93,10 +109,12 @@ pub fn install_plans_for_target(
 ) -> Vec<InstallPlan> {
     let mut plans = Vec::new();
     if prefer_official {
-        plans.push(official_install_plan_for_target(
+        if let Some(plan) = official_install_plan_for_target(
             target.clone(),
             target_profile,
-        ));
+        ) {
+            plans.push(plan);
+        }
     }
     plans.extend(fallback_install_plans_for_target(
         target,
@@ -148,7 +166,9 @@ pub fn fallback_install_plans_for_target(
     has_pnpm: bool,
 ) -> Vec<InstallPlan> {
     match target {
-        RuntimeTarget::MacNative => fallback_install_plans(has_npm, has_pnpm),
+        RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => {
+            fallback_install_plans(has_npm, has_pnpm)
+        }
         RuntimeTarget::WindowsWsl => {
             let mut plans = Vec::new();
             if has_npm {
@@ -241,7 +261,9 @@ pub fn read_openclaw_version(
     target_profile: &TargetProfile,
 ) -> Option<String> {
     read_first_non_empty_line(match target {
-        RuntimeTarget::MacNative => Command::new("openclaw").arg("--version").output().ok()?,
+        RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => {
+            Command::new("openclaw").arg("--version").output().ok()?
+        }
         RuntimeTarget::WindowsWsl => run_wsl_command(target_profile, "openclaw --version").ok()?,
     })
 }
@@ -251,7 +273,7 @@ pub fn read_latest_openclaw_version(
     target_profile: &TargetProfile,
 ) -> Option<String> {
     match target {
-        RuntimeTarget::MacNative => {
+        RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => {
             if command_available("npm") {
                 return read_first_non_empty_line(
                     Command::new("npm")
@@ -457,9 +479,9 @@ fn sh_quote(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        compare_versions, default_runtime_target, fallback_install_plans, install_plans_for_target,
-        looks_like_permission_error, macos_ensure_ssh_plan, official_install_plan,
-        update_plans_for_target, Platform,
+        compare_versions, default_install_target, fallback_install_plans,
+        install_plans_for_target, looks_like_permission_error, macos_ensure_ssh_plan,
+        official_install_plan, preferred_windows_runtime_target, update_plans_for_target, Platform,
     };
     use crate::types::{RuntimeTarget, TargetProfile};
 
@@ -532,19 +554,45 @@ mod tests {
     }
 
     #[test]
+    fn windows_native_updates_use_host_package_managers_without_official_plan() {
+        let plans = update_plans_for_target(
+            RuntimeTarget::WindowsNative,
+            &TargetProfile::default(),
+            true,
+            true,
+            true,
+        );
+        let strategies = plans.iter().map(|plan| plan.strategy).collect::<Vec<_>>();
+
+        assert_eq!(strategies, vec!["npm", "pnpm"]);
+    }
+
+    #[test]
     fn detects_permission_related_failures() {
         let output = "Permission denied while writing to /usr/local/bin";
         assert!(looks_like_permission_error(output));
     }
 
     #[test]
-    fn chooses_runtime_target_from_platform() {
+    fn chooses_install_target_from_platform() {
         assert_eq!(
-            default_runtime_target(Platform::MacOs),
+            default_install_target(Platform::MacOs),
             RuntimeTarget::MacNative
         );
         assert_eq!(
-            default_runtime_target(Platform::Windows),
+            default_install_target(Platform::Windows),
+            RuntimeTarget::WindowsWsl
+        );
+    }
+
+    #[test]
+    fn prefers_windows_native_target_when_host_openclaw_exists() {
+        assert_eq!(
+            preferred_windows_runtime_target(true),
+            RuntimeTarget::WindowsNative
+        );
+        assert_eq!(
+            preferred_windows_runtime_target(false),
             RuntimeTarget::WindowsWsl
         );
     }

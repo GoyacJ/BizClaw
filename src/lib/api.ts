@@ -134,7 +134,7 @@ export const installOpenClaw = (request: InstallRequest) =>
 export const checkOpenClawUpdate = () => (
   canInvokeTauri()
     ? tauriInvoke<OperationTaskSnapshot>('check_openclaw_update')
-    : Promise.resolve({
+    : Promise.resolve<OperationTaskSnapshot>({
       ...idleOperationTask,
       phase: 'success',
       kind: 'checkUpdate',

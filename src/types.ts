@@ -8,7 +8,7 @@ export type RuntimePhase =
   | 'running'
   | 'error'
 
-export type RuntimeTarget = 'macNative' | 'windowsWsl'
+export type RuntimeTarget = 'macNative' | 'windowsNative' | 'windowsWsl'
 
 export type ThemePreference = 'light' | 'dark' | 'system'
 export type LocalePreference = 'zh-CN' | 'en-US'

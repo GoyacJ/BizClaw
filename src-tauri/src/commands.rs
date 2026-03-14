@@ -20,10 +20,10 @@ use crate::{
     app_menu,
     config_store::{JsonSettingsStore, JsonUiPreferencesStore},
     install::{
-        command_available, compare_versions, current_platform, default_runtime_target,
-        detect_wsl_status, elevated_install_plan, install_plans_for_target,
-        looks_like_permission_error, macos_ensure_ssh_plan, read_latest_openclaw_version,
-        read_openclaw_version, target_command_available, update_plans_for_target,
+        command_available, compare_versions, current_platform, detect_wsl_status,
+        elevated_install_plan, install_plans_for_target, looks_like_permission_error,
+        macos_ensure_ssh_plan, read_latest_openclaw_version, read_openclaw_version,
+        resolve_runtime_target, target_command_available, update_plans_for_target,
         wsl_bootstrap_plan, wsl_ensure_ssh_plan, InstallPlan, Platform, MANUAL_INSTALL_URL,
     },
     operation_supervisor::{
@@ -344,9 +344,12 @@ pub async fn test_connection(
     let ssh_password = ssh_password_store(&app)
         .and_then(|store| store.get_secret())
         .map_err(err_to_string)?;
-    let runtime_target = default_runtime_target(current_platform().map_err(err_to_string)?);
-    let app_handle = app.clone();
     let target_profile = settings.target_profile.clone();
+    let runtime_target = resolve_runtime_target(
+        current_platform().map_err(err_to_string)?,
+        &target_profile,
+    );
+    let app_handle = app.clone();
     let company_profile = settings.company_profile.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
@@ -395,10 +398,13 @@ pub fn start_runtime(app: AppHandle, state: State<'_, AppState>) -> Result<Runti
     let ssh_password = ssh_password_store(&app)
         .and_then(|store| store.get_secret())
         .map_err(err_to_string)?;
-    let runtime_target = default_runtime_target(current_platform().map_err(err_to_string)?);
+    let target_profile = settings.target_profile.clone();
+    let runtime_target = resolve_runtime_target(
+        current_platform().map_err(err_to_string)?,
+        &target_profile,
+    );
     let shared_runtime = state.runtime.clone();
     let app_handle = app.clone();
-    let target_profile = settings.target_profile.clone();
     let company_profile = settings.company_profile.clone();
     let user_profile = settings.user_profile.clone();
     let token_clone = token.clone();
@@ -465,7 +471,7 @@ fn detect_environment_inner(
         .as_ref()
         .map(|saved| saved.target_profile.clone())
         .unwrap_or_default();
-    let runtime_target = default_runtime_target(platform);
+    let runtime_target = resolve_runtime_target(platform, &target_profile);
     let resolved = resolve_environment(
         runtime_target,
         &target_profile,
@@ -560,7 +566,7 @@ fn resolve_environment(
         latest_openclaw_version.as_deref(),
     );
     let wsl_status = match runtime_target {
-        RuntimeTarget::MacNative => None,
+        RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => None,
         RuntimeTarget::WindowsWsl => Some(detect_wsl_status(target_profile)),
     };
 
@@ -602,6 +608,7 @@ fn latest_openclaw_version_cache_key(
 ) -> String {
     match runtime_target {
         RuntimeTarget::MacNative => "macNative".into(),
+        RuntimeTarget::WindowsNative => "windowsNative".into(),
         RuntimeTarget::WindowsWsl => format!("windowsWsl:{}", target_profile.wsl_distro),
     }
 }
@@ -1098,7 +1105,7 @@ fn build_runtime_ssh_command(
     ssh_password: Option<&str>,
 ) -> Result<CommandSpec> {
     match runtime_target {
-        RuntimeTarget::MacNative => {
+        RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => {
             if let Some(password) = ssh_password {
                 let askpass_program = std::env::current_exe().context(locale_text(
                     locale,
@@ -1129,7 +1136,7 @@ fn build_gateway_status_command(
     timeout_ms: u64,
 ) -> CommandSpec {
     match runtime_target {
-        RuntimeTarget::MacNative => {
+        RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => {
             build_native_gateway_status_command(company_profile, token, timeout_ms)
         }
         RuntimeTarget::WindowsWsl => {
@@ -1272,6 +1279,19 @@ fn install_recommendation(
                 } else {
                     "推荐先使用官方安装脚本，失败后再回退到 npm / pnpm 全局安装。".into()
                 }
+            }
+        }
+        RuntimeTarget::WindowsNative => {
+            if !target_ssh_installed {
+                if matches!(locale, LocalePreference::EnUs) {
+                    "OpenClaw is installed on Windows and BizClaw will use the local runtime, but local OpenSSH is still required before starting the hosted connection.".into()
+                } else {
+                    "已检测到 Windows 本机 OpenClaw，BizClaw 将优先使用本机运行，但在启动托管前仍需要本机 OpenSSH。".into()
+                }
+            } else if matches!(locale, LocalePreference::EnUs) {
+                "BizClaw will use the local Windows OpenClaw installation first and update the local installation when npm or pnpm is available.".into()
+            } else {
+                "BizClaw 将优先使用 Windows 本机的 OpenClaw，并在可用时直接更新本机安装。".into()
             }
         }
         RuntimeTarget::WindowsWsl => {
@@ -1608,6 +1628,29 @@ fn run_install_or_update(
         return Ok(result);
     }
 
+    if matches!(kind, OperationKind::Install)
+        && matches!(runtime_target, RuntimeTarget::WindowsNative)
+        && resolved.openclaw_installed
+    {
+        return Ok(OperationResult {
+            kind,
+            strategy: "skipped".into(),
+            success: true,
+            step: OperationStep::InstallOpenClaw,
+            stdout: String::new(),
+            stderr: String::new(),
+            needs_elevation: false,
+            manual_url: MANUAL_INSTALL_URL.into(),
+            follow_up: locale_text(
+                locale,
+                "已检测到 Windows 本机 OpenClaw，跳过安装。",
+                "A local Windows OpenClaw installation is already available. Skipping install.",
+            )
+            .into(),
+            remediation: None,
+        });
+    }
+
     if matches!(runtime_target, RuntimeTarget::WindowsWsl) {
         let wsl_status = resolved
             .wsl_status
@@ -1676,7 +1719,7 @@ fn run_install_or_update(
         }
     }
 
-    if !resolved.target_ssh_installed {
+    if !resolved.target_ssh_installed && !matches!(runtime_target, RuntimeTarget::WindowsNative) {
         let snapshot = update_step(operation_state, OperationStep::EnsureSsh);
         emit_operation_status(app, &snapshot);
         if matches!(runtime_target, RuntimeTarget::MacNative) && !command_available("brew") {
@@ -1700,6 +1743,7 @@ fn run_install_or_update(
         }
         let ssh_plan = match runtime_target {
             RuntimeTarget::MacNative => macos_ensure_ssh_plan(),
+            RuntimeTarget::WindowsNative => unreachable!("windows native does not auto-install ssh"),
             RuntimeTarget::WindowsWsl => wsl_ensure_ssh_plan(&target_profile),
         };
         let ssh_result = run_single_plan(
@@ -1738,6 +1782,9 @@ fn run_install_or_update(
                         locale,
                         "BizClaw 未能通过 Homebrew 自动安装 OpenSSH，请查看输出后重试。",
                         "BizClaw could not install OpenSSH via Homebrew. Check the output and try again.",
+                    ),
+                    RuntimeTarget::WindowsNative => unreachable!(
+                        "windows native does not auto-install ssh"
                     ),
                     RuntimeTarget::WindowsWsl => locale_text(
                         locale,
@@ -2491,6 +2538,35 @@ mod tests {
             Some("Ubuntu")
         );
         assert_eq!(snapshot.runtime_status.phase, RuntimePhase::InstallNeeded);
+    }
+
+    #[test]
+    fn environment_snapshot_omits_wsl_status_when_target_is_windows_native() {
+        let snapshot = build_environment_snapshot(
+            "windows",
+            RuntimeTarget::WindowsNative,
+            Some(sample_settings()),
+            UiPreferences::default(),
+            RuntimeStatus::default(),
+            ResolvedEnvironment {
+                runtime_target: RuntimeTarget::WindowsNative,
+                host_ssh_installed: true,
+                target_ssh_installed: true,
+                openclaw_installed: true,
+                openclaw_version: Some("OpenClaw 2026.3.8".into()),
+                latest_openclaw_version: Some("2026.3.9".into()),
+                update_available: true,
+                wsl_status: None,
+            },
+            TokenState {
+                status: TokenStatus::Saved,
+                message: None,
+            },
+        );
+
+        assert_eq!(snapshot.runtime_target, RuntimeTarget::WindowsNative);
+        assert_eq!(snapshot.wsl_status, None);
+        assert_eq!(snapshot.runtime_status.phase, RuntimePhase::Configured);
     }
 
     #[test]

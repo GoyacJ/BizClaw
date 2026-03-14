@@ -805,7 +805,9 @@ describe('useAppModel', () => {
     bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
     apiMocks.onRuntimeLog.mockResolvedValue(() => {})
     apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
-    apiMocks.onOperationStatus.mockImplementation(async (handler) => {
+    apiMocks.onOperationStatus.mockImplementation(async (
+      handler: (snapshot: OperationTaskSnapshot) => void,
+    ) => {
       operationStatusHandler = handler
       return () => {}
     })
@@ -835,7 +837,8 @@ describe('useAppModel', () => {
     expect(model.environment.value).toEqual(initialSnapshot)
     expect(apiMocks.detectEnvironment).toHaveBeenCalledTimes(1)
 
-    operationStatusHandler?.(createTask({
+    expect(operationStatusHandler).not.toBeNull()
+    operationStatusHandler!(createTask({
       phase: 'success',
       kind: 'checkUpdate',
       step: 'checkUpdate',

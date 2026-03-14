@@ -221,7 +221,7 @@ fn build_runtime_ssh_command(
     ssh_password: Option<&str>,
 ) -> Result<CommandSpec> {
     match runtime_target {
-        RuntimeTarget::MacNative => {
+        RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => {
             if let Some(password) = ssh_password {
                 let askpass_program = std::env::current_exe().context(locale_text(
                     locale,
@@ -252,7 +252,7 @@ fn build_runtime_openclaw_command(
     token: &str,
 ) -> CommandSpec {
     match runtime_target {
-        RuntimeTarget::MacNative => {
+        RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => {
             build_native_openclaw_command(company_profile, user_profile, token)
         }
         RuntimeTarget::WindowsWsl => {
@@ -527,7 +527,7 @@ fn node_boot_wait(runtime_target: RuntimeTarget) -> Duration {
 fn node_boot_wait_for_target(runtime_target: RuntimeTarget) -> Duration {
     match runtime_target {
         RuntimeTarget::WindowsWsl => WINDOWS_NODE_BOOT_WAIT,
-        RuntimeTarget::MacNative => DEFAULT_NODE_BOOT_WAIT,
+        RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => DEFAULT_NODE_BOOT_WAIT,
     }
 }
 
@@ -641,6 +641,10 @@ mod tests {
         assert_eq!(
             node_boot_wait_for_target(RuntimeTarget::WindowsWsl),
             Duration::from_secs(4)
+        );
+        assert_eq!(
+            node_boot_wait_for_target(RuntimeTarget::WindowsNative),
+            Duration::from_secs(1)
         );
         assert_eq!(
             node_boot_wait_for_target(RuntimeTarget::MacNative),

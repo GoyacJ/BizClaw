@@ -18,6 +18,7 @@ describe('runtime view helpers', () => {
 
   it('renders the runtime target and operation step labels', () => {
     expect(runtimeTargetLabel('macNative')).toBe('macOS 本机')
+    expect(runtimeTargetLabel('windowsNative')).toBe('Windows 本机')
     expect(runtimeTargetLabel('windowsWsl')).toBe('Windows WSL')
     expect(operationStepLabel('bootstrapWsl')).toBe('WSL 初始化')
     expect(operationTaskPhaseLabel('cancelling')).toBe('停止中')
@@ -27,6 +28,7 @@ describe('runtime view helpers', () => {
     setAppLocale('en-US')
 
     expect(runtimeTargetLabel('macNative')).toBe('macOS')
+    expect(runtimeTargetLabel('windowsNative')).toBe('Windows Native')
     expect(operationStepLabel('bootstrapWsl')).toBe('Initialize WSL')
     expect(operationTaskPhaseLabel('cancelling')).toBe('Stopping')
     expect(tokenStatusLabel(createSnapshot({
@@ -136,6 +138,15 @@ describe('runtime view helpers', () => {
 
     expect(tokenStatusLabel(snapshot)).toBe('Token 未保存')
     expect(startRuntimeDisabledReason(snapshot, false)).toBe('请先完成 WSL / Ubuntu 初始化。')
+  })
+
+  it('does not require wsl readiness when using windows native runtime', () => {
+    const snapshot = createSnapshot({
+      runtimeTarget: 'windowsNative',
+      targetSshInstalled: false,
+    })
+
+    expect(startRuntimeDisabledReason(snapshot, false)).toBe('请先补齐目标运行环境中的 OpenSSH。')
   })
 })
 

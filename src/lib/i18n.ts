@@ -200,6 +200,7 @@ const messages = {
       },
       target: {
         macNative: 'macOS 本机',
+        windowsNative: 'Windows 本机',
         windowsWsl: 'Windows WSL',
       },
       token: {
@@ -498,6 +499,7 @@ const messages = {
       },
       target: {
         macNative: 'macOS',
+        windowsNative: 'Windows Native',
         windowsWsl: 'Windows WSL',
       },
       token: {

@@ -1,13 +1,14 @@
 {
   "name": "bizclaw",
   "private": true,
-  "version": "0.1.8",
+  "version": "0.1.9",
   "type": "module",
   "packageManager": "pnpm@10.11.0",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 1420",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
+    "build:updater-manifest": "node ./scripts/build-updater-manifest.mjs",
     "check:release-version": "node ./scripts/verify-release-version.mjs",
     "test": "pnpm test:web && pnpm test:rust",
     "test:web": "vitest run",
@@ -18,6 +19,8 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-process": "^2.0.0",
+    "@tauri-apps/plugin-updater": "^2.0.0",
     "vue": "^3.5.13"
   },
   "devDependencies": {

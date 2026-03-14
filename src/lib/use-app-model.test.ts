@@ -5,6 +5,7 @@ import { useAppModel } from './use-app-model'
 import type { EnvironmentSnapshot, OperationEvent, OperationTaskSnapshot } from '@/types'
 
 const apiMocks = vi.hoisted(() => ({
+  checkOpenClawUpdate: vi.fn(),
   detectEnvironment: vi.fn(),
   streamLogs: vi.fn(),
   getOperationStatus: vi.fn(),
@@ -33,7 +34,7 @@ const bizclawUpdaterMocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/lib/api', () => ({
-  checkOpenClawUpdate: vi.fn(),
+  checkOpenClawUpdate: apiMocks.checkOpenClawUpdate,
   detectEnvironment: apiMocks.detectEnvironment,
   getOperationEvents: apiMocks.getOperationEvents,
   getOperationStatus: apiMocks.getOperationStatus,
@@ -774,6 +775,78 @@ describe('useAppModel', () => {
     expect(model.installRemediationModal.open).toBe(false)
     expect(model.operationTask.value.phase).toBe('success')
   })
+
+  it('keeps the current environment until an async OpenClaw update check reports completion', async () => {
+    const initialSnapshot = createSnapshot({
+      openclawVersion: 'OpenClaw 2026.3.8',
+      latestOpenclawVersion: null,
+      updateAvailable: false,
+    })
+    const refreshedSnapshot = createSnapshot({
+      openclawVersion: 'OpenClaw 2026.3.8',
+      latestOpenclawVersion: '2026.3.10',
+      updateAvailable: true,
+    })
+    let operationStatusHandler: ((snapshot: OperationTaskSnapshot) => void) | null = null
+
+    apiMocks.detectEnvironment
+      .mockResolvedValueOnce(initialSnapshot)
+      .mockResolvedValueOnce(refreshedSnapshot)
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.checkOpenClawUpdate.mockResolvedValue(createTask({
+      phase: 'running',
+      kind: 'checkUpdate',
+      step: 'checkUpdate',
+      success: true,
+      followUp: '正在检查更新。',
+    }))
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockImplementation(async (handler) => {
+      operationStatusHandler = handler
+      return () => {}
+    })
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+    await model.checkForUpdates()
+    await flushPromises()
+
+    expect(apiMocks.checkOpenClawUpdate).toHaveBeenCalledTimes(1)
+    expect(model.operationTask.value.phase).toBe('running')
+    expect(model.environment.value).toEqual(initialSnapshot)
+    expect(apiMocks.detectEnvironment).toHaveBeenCalledTimes(1)
+
+    operationStatusHandler?.(createTask({
+      phase: 'success',
+      kind: 'checkUpdate',
+      step: 'checkUpdate',
+      success: true,
+      followUp: '检测到新版本。',
+    }))
+    await flushPromises()
+
+    expect(apiMocks.detectEnvironment).toHaveBeenCalledTimes(2)
+    expect(model.environment.value).toEqual(refreshedSnapshot)
+  })
 })
 
 async function flushPromises() {
@@ -836,8 +909,8 @@ function createTask({
   remediation = null,
 }: {
   phase: OperationTaskSnapshot['phase']
-  kind: 'install' | 'update'
-  step: 'ensureSsh' | 'installOpenClaw' | 'updateOpenClaw'
+  kind: 'install' | 'update' | 'checkUpdate'
+  step: 'ensureSsh' | 'installOpenClaw' | 'updateOpenClaw' | 'checkUpdate'
   success: boolean
   followUp: string
   remediation?: {

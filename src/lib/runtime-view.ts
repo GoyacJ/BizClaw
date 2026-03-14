@@ -118,6 +118,14 @@ export function buildOperationsSummary(
     }
   }
 
+  if (operationTask?.phase === 'running' && operationTask.kind === 'checkUpdate') {
+    return {
+      title: translate('runtime.operationsSummary.checkingTitle'),
+      detail: translate('runtime.operationsSummary.checkingDetail'),
+      tone: 'active',
+    }
+  }
+
   if (operationTask?.phase === 'running' && operationTask.kind === 'update') {
     return {
       title: translate('runtime.operationsSummary.updatingTitle'),
@@ -160,9 +168,13 @@ export function buildOperationsSummary(
 
   if (operationTask?.phase === 'success' && operationTask.lastResult?.success) {
     return {
-      title: operationTask.kind === 'update'
-        ? translate('runtime.operationsSummary.completedUpdate')
-        : translate('runtime.operationsSummary.completedInstall'),
+      title: operationTask.kind === 'checkUpdate'
+        ? snapshot?.updateAvailable
+          ? translate('runtime.operationsSummary.updateReady')
+          : translate('runtime.operationsSummary.installedReady')
+        : operationTask.kind === 'update'
+          ? translate('runtime.operationsSummary.completedUpdate')
+          : translate('runtime.operationsSummary.completedInstall'),
       detail: operationTask.lastResult.followUp,
       tone: 'complete',
     }

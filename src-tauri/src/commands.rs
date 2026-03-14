@@ -22,8 +22,8 @@ use crate::{
     install::{
         command_available, compare_versions, current_platform, default_runtime_target,
         detect_wsl_status, elevated_install_plan, install_plans_for_target,
-        looks_like_permission_error, macos_ensure_ssh_plan, update_plans_for_target,
-        read_latest_openclaw_version, read_openclaw_version, target_command_available,
+        looks_like_permission_error, macos_ensure_ssh_plan, read_latest_openclaw_version,
+        read_openclaw_version, target_command_available, update_plans_for_target,
         wsl_bootstrap_plan, wsl_ensure_ssh_plan, InstallPlan, Platform, MANUAL_INSTALL_URL,
     },
     operation_supervisor::{
@@ -43,11 +43,11 @@ use crate::{
     types::{
         CompanyProfile, ConnectionTestEvent, ConnectionTestEventStatus, ConnectionTestResult,
         ConnectionTestStep, EnvironmentSnapshot, InstallRequest, LocalePreference, LogEntry,
-        OperationEvent, OperationEventSource, OperationEventStatus, OperationKind, OperationResult,
-        OperationRemediation, OperationRemediationKind, OperationStep, OperationTaskPhase,
-        OperationTaskSnapshot, PersistedSettings, RuntimePhase, RuntimeStatus, RuntimeTarget,
-        SupportUrlTarget, TargetProfile, ThemePreference, TokenStatus, UiPreferences, UserProfile,
-        WslStatus,
+        OperationEvent, OperationEventSource, OperationEventStatus, OperationKind,
+        OperationRemediation, OperationRemediationKind, OperationResult, OperationStep,
+        OperationTaskPhase, OperationTaskSnapshot, PersistedSettings, RuntimePhase, RuntimeStatus,
+        RuntimeTarget, SupportUrlTarget, TargetProfile, ThemePreference, TokenStatus,
+        UiPreferences, UserProfile, WslStatus,
     },
     validation::{
         saved_settings_are_complete, validate_company_profile_with_locale,
@@ -60,6 +60,7 @@ pub struct AppState {
     pub operation: SharedOperationState,
     pub port_task_active: Arc<AtomicBool>,
     pub environment_cache: Arc<Mutex<Option<EnvironmentSnapshot>>>,
+    latest_openclaw_version_cache: Arc<Mutex<Option<LatestOpenClawVersionCacheEntry>>>,
 }
 
 impl Default for AppState {
@@ -69,11 +70,13 @@ impl Default for AppState {
             operation: new_shared_operation_state(),
             port_task_active: Arc::new(AtomicBool::new(false)),
             environment_cache: Arc::new(Mutex::new(None)),
+            latest_openclaw_version_cache: Arc::new(Mutex::new(None)),
         }
     }
 }
 
 const HOMEBREW_INSTALL_URL: &str = "https://brew.sh";
+const LATEST_OPENCLAW_VERSION_CACHE_TTL_MS: u64 = 60_000;
 
 trait SettingsStoreAccess {
     fn load(&self) -> Result<Option<PersistedSettings>>;
@@ -106,6 +109,13 @@ struct ResolvedEnvironment {
     latest_openclaw_version: Option<String>,
     update_available: bool,
     wsl_status: Option<WslStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LatestOpenClawVersionCacheEntry {
+    cache_key: String,
+    version: Option<String>,
+    checked_at_ms: u64,
 }
 
 #[derive(Debug)]
@@ -195,61 +205,8 @@ pub fn install_openclaw(
 pub fn check_openclaw_update(
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<EnvironmentSnapshot, String> {
-    let locale = current_locale(&app);
-    emit_operation_event(
-        &app,
-        Some(&state.operation),
-        OperationKind::CheckUpdate,
-        OperationStep::CheckUpdate,
-        OperationEventStatus::Running,
-        OperationEventSource::System,
-        locale_text(
-            locale,
-            "正在检查 OpenClaw 更新",
-            "Checking for OpenClaw updates",
-        ),
-    );
-
-    let snapshot = refresh_environment_snapshot(&app, &state, true).map_err(err_to_string)?;
-    let message = if snapshot.update_available {
-        locale_owned(
-            locale,
-            format!(
-                "检测到新版本：{}",
-                snapshot
-                    .latest_openclaw_version
-                    .clone()
-                    .unwrap_or_else(|| locale_text(locale, "未知版本", "Unknown version").into())
-            ),
-            format!(
-                "New version available: {}",
-                snapshot
-                    .latest_openclaw_version
-                    .clone()
-                    .unwrap_or_else(|| locale_text(locale, "未知版本", "Unknown version").into())
-            ),
-        )
-    } else {
-        locale_text(
-            locale,
-            "当前已是最新版本，或暂时无法获取远端版本信息。",
-            "OpenClaw is already up to date, or the remote version could not be loaded.",
-        )
-        .into()
-    };
-
-    emit_operation_event(
-        &app,
-        Some(&state.operation),
-        OperationKind::CheckUpdate,
-        OperationStep::CheckUpdate,
-        OperationEventStatus::Success,
-        OperationEventSource::System,
-        message,
-    );
-
-    Ok(snapshot)
+) -> Result<OperationTaskSnapshot, String> {
+    start_check_update_task(&app, &state).map_err(err_to_string)
 }
 
 #[tauri::command]
@@ -497,6 +454,7 @@ fn detect_environment_inner(
     app: &AppHandle,
     runtime: &SharedRuntimeState,
     include_remote_update_check: bool,
+    latest_version_cache: &Arc<Mutex<Option<LatestOpenClawVersionCacheEntry>>>,
 ) -> Result<EnvironmentSnapshot> {
     let settings = settings_store(app).and_then(|store| store.load())?;
     let ui_preferences = ui_preferences_store(app)
@@ -512,6 +470,7 @@ fn detect_environment_inner(
         runtime_target,
         &target_profile,
         include_remote_update_check,
+        latest_version_cache,
     );
     let token_state = inspect_token_state(token_store(app).and_then(|store| store.get_secret()));
 
@@ -531,7 +490,12 @@ fn refresh_environment_snapshot(
     state: &State<'_, AppState>,
     include_remote_update_check: bool,
 ) -> Result<EnvironmentSnapshot> {
-    let snapshot = detect_environment_inner(app, &state.runtime, include_remote_update_check)?;
+    let snapshot = detect_environment_inner(
+        app,
+        &state.runtime,
+        include_remote_update_check,
+        &state.latest_openclaw_version_cache,
+    )?;
     {
         let mut guard = state
             .environment_cache
@@ -567,6 +531,7 @@ fn resolve_environment(
     runtime_target: RuntimeTarget,
     target_profile: &TargetProfile,
     include_remote_update_check: bool,
+    latest_version_cache: &Arc<Mutex<Option<LatestOpenClawVersionCacheEntry>>>,
 ) -> ResolvedEnvironment {
     let host_ssh_installed = command_available("ssh");
     let target_ssh_installed =
@@ -577,16 +542,23 @@ fn resolve_environment(
         .then(|| read_openclaw_version(runtime_target.clone(), target_profile))
         .flatten();
     let latest_openclaw_version = if include_remote_update_check {
-        read_latest_openclaw_version(runtime_target.clone(), target_profile)
+        read_latest_openclaw_version_cached(
+            latest_version_cache,
+            runtime_target.clone(),
+            target_profile,
+        )
     } else {
-        None
+        read_cached_latest_openclaw_version(
+            latest_version_cache,
+            runtime_target.clone(),
+            target_profile,
+        )
+        .flatten()
     };
-    let update_available = include_remote_update_check
-        && openclaw_version
-            .as_deref()
-            .zip(latest_openclaw_version.as_deref())
-            .map(|(installed, latest)| compare_versions(installed, latest))
-            .unwrap_or(false);
+    let update_available = update_available_from_versions(
+        openclaw_version.as_deref(),
+        latest_openclaw_version.as_deref(),
+    );
     let wsl_status = match runtime_target {
         RuntimeTarget::MacNative => None,
         RuntimeTarget::WindowsWsl => Some(detect_wsl_status(target_profile)),
@@ -602,6 +574,86 @@ fn resolve_environment(
         update_available,
         wsl_status,
     }
+}
+
+fn read_latest_openclaw_version_cached(
+    cache: &Arc<Mutex<Option<LatestOpenClawVersionCacheEntry>>>,
+    runtime_target: RuntimeTarget,
+    target_profile: &TargetProfile,
+) -> Option<String> {
+    let cache_key = latest_openclaw_version_cache_key(&runtime_target, target_profile);
+    with_cached_latest_openclaw_version(cache, &cache_key, timestamp_ms(), || {
+        read_latest_openclaw_version(runtime_target, target_profile)
+    })
+}
+
+fn read_cached_latest_openclaw_version(
+    cache: &Arc<Mutex<Option<LatestOpenClawVersionCacheEntry>>>,
+    runtime_target: RuntimeTarget,
+    target_profile: &TargetProfile,
+) -> Option<Option<String>> {
+    let cache_key = latest_openclaw_version_cache_key(&runtime_target, target_profile);
+    cached_latest_openclaw_version(cache, &cache_key, timestamp_ms())
+}
+
+fn latest_openclaw_version_cache_key(
+    runtime_target: &RuntimeTarget,
+    target_profile: &TargetProfile,
+) -> String {
+    match runtime_target {
+        RuntimeTarget::MacNative => "macNative".into(),
+        RuntimeTarget::WindowsWsl => format!("windowsWsl:{}", target_profile.wsl_distro),
+    }
+}
+
+fn with_cached_latest_openclaw_version(
+    cache: &Arc<Mutex<Option<LatestOpenClawVersionCacheEntry>>>,
+    cache_key: &str,
+    now_ms: u64,
+    fetch: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    {
+        let guard = cache.lock().expect("latest version cache mutex poisoned");
+        if let Some(entry) = guard.as_ref() {
+            if entry.cache_key == cache_key
+                && now_ms.saturating_sub(entry.checked_at_ms) < LATEST_OPENCLAW_VERSION_CACHE_TTL_MS
+            {
+                return entry.version.clone();
+            }
+        }
+    }
+
+    let version = fetch();
+    let mut guard = cache.lock().expect("latest version cache mutex poisoned");
+    *guard = Some(LatestOpenClawVersionCacheEntry {
+        cache_key: cache_key.into(),
+        version: version.clone(),
+        checked_at_ms: now_ms,
+    });
+    version
+}
+
+fn cached_latest_openclaw_version(
+    cache: &Arc<Mutex<Option<LatestOpenClawVersionCacheEntry>>>,
+    cache_key: &str,
+    now_ms: u64,
+) -> Option<Option<String>> {
+    let guard = cache.lock().expect("latest version cache mutex poisoned");
+    guard.as_ref().and_then(|entry| {
+        (entry.cache_key == cache_key
+            && now_ms.saturating_sub(entry.checked_at_ms) < LATEST_OPENCLAW_VERSION_CACHE_TTL_MS)
+            .then(|| entry.version.clone())
+    })
+}
+
+fn update_available_from_versions(
+    openclaw_version: Option<&str>,
+    latest_openclaw_version: Option<&str>,
+) -> bool {
+    openclaw_version
+        .zip(latest_openclaw_version)
+        .map(|(installed, latest)| compare_versions(installed, latest))
+        .unwrap_or(false)
 }
 
 fn settings_store(app: &AppHandle) -> Result<JsonSettingsStore> {
@@ -1270,6 +1322,7 @@ fn start_install_or_update_task(
     let runtime_state = state.runtime.clone();
     let operation_state = state.operation.clone();
     let environment_cache = state.environment_cache.clone();
+    let latest_version_cache = state.latest_openclaw_version_cache.clone();
 
     thread::spawn(move || {
         let locale = current_locale(&app_handle);
@@ -1312,7 +1365,9 @@ fn start_install_or_update_task(
 
         emit_operation_status(&app_handle, &task_snapshot);
 
-        if let Ok(snapshot) = detect_environment_inner(&app_handle, &runtime_state, false) {
+        if let Ok(snapshot) =
+            detect_environment_inner(&app_handle, &runtime_state, false, &latest_version_cache)
+        {
             {
                 let mut guard = environment_cache
                     .lock()
@@ -1323,6 +1378,169 @@ fn start_install_or_update_task(
         } else {
             let _ = app_menu::refresh_status_menu_from_state(&app_handle);
         }
+    });
+
+    Ok(snapshot)
+}
+
+fn start_check_update_task(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+) -> Result<OperationTaskSnapshot> {
+    let snapshot = start_task(
+        &state.operation,
+        OperationKind::CheckUpdate,
+        OperationStep::CheckUpdate,
+    )?;
+    emit_operation_status(app, &snapshot);
+
+    let app_handle = app.clone();
+    let runtime_state = state.runtime.clone();
+    let operation_state = state.operation.clone();
+    let environment_cache = state.environment_cache.clone();
+    let latest_version_cache = state.latest_openclaw_version_cache.clone();
+
+    thread::spawn(move || {
+        let locale = current_locale(&app_handle);
+        emit_operation_event(
+            &app_handle,
+            Some(&operation_state),
+            OperationKind::CheckUpdate,
+            OperationStep::CheckUpdate,
+            OperationEventStatus::Running,
+            OperationEventSource::System,
+            locale_text(
+                locale,
+                "正在检查 OpenClaw 更新",
+                "Checking for OpenClaw updates",
+            ),
+        );
+
+        let task_snapshot = match detect_environment_inner(
+            &app_handle,
+            &runtime_state,
+            true,
+            &latest_version_cache,
+        ) {
+            Ok(snapshot) => {
+                {
+                    let mut guard = environment_cache
+                        .lock()
+                        .expect("environment cache mutex poisoned");
+                    *guard = Some(snapshot.clone());
+                }
+                let message = if snapshot.update_available {
+                    locale_owned(
+                        locale,
+                        format!(
+                            "检测到新版本：{}",
+                            snapshot.latest_openclaw_version.clone().unwrap_or_else(|| {
+                                locale_text(locale, "未知版本", "Unknown version").into()
+                            })
+                        ),
+                        format!(
+                            "New version available: {}",
+                            snapshot.latest_openclaw_version.clone().unwrap_or_else(|| {
+                                locale_text(locale, "未知版本", "Unknown version").into()
+                            })
+                        ),
+                    )
+                } else {
+                    locale_text(
+                        locale,
+                        "当前已是最新版本，或暂时无法获取远端版本信息。",
+                        "OpenClaw is already up to date, or the remote version could not be loaded.",
+                    )
+                    .into()
+                };
+
+                let (phase, status, result, event_message) = if cancel_requested(&operation_state) {
+                    (
+                        OperationTaskPhase::Cancelled,
+                        OperationEventStatus::Cancelled,
+                        cancelled_result(
+                            locale,
+                            OperationKind::CheckUpdate,
+                            OperationStep::CheckUpdate,
+                            "cancelled",
+                            String::new(),
+                            String::new(),
+                        ),
+                        cancelled_follow_up(locale, OperationKind::CheckUpdate).into(),
+                    )
+                } else {
+                    (
+                        OperationTaskPhase::Success,
+                        OperationEventStatus::Success,
+                        OperationResult {
+                            kind: OperationKind::CheckUpdate,
+                            strategy: "background-check".into(),
+                            success: true,
+                            step: OperationStep::CheckUpdate,
+                            stdout: String::new(),
+                            stderr: String::new(),
+                            needs_elevation: false,
+                            manual_url: MANUAL_INSTALL_URL.into(),
+                            follow_up: message.clone(),
+                            remediation: None,
+                        },
+                        message.clone(),
+                    )
+                };
+
+                emit_operation_event(
+                    &app_handle,
+                    Some(&operation_state),
+                    OperationKind::CheckUpdate,
+                    OperationStep::CheckUpdate,
+                    status,
+                    OperationEventSource::System,
+                    event_message,
+                );
+                finish_task(&operation_state, phase, result)
+            }
+            Err(error) => {
+                let message = error.to_string();
+                emit_operation_event(
+                    &app_handle,
+                    Some(&operation_state),
+                    OperationKind::CheckUpdate,
+                    OperationStep::CheckUpdate,
+                    OperationEventStatus::Error,
+                    OperationEventSource::System,
+                    message.clone(),
+                );
+                finish_task(
+                    &operation_state,
+                    if cancel_requested(&operation_state) {
+                        OperationTaskPhase::Cancelled
+                    } else {
+                        OperationTaskPhase::Error
+                    },
+                    if cancel_requested(&operation_state) {
+                        cancelled_result(
+                            locale,
+                            OperationKind::CheckUpdate,
+                            OperationStep::CheckUpdate,
+                            "cancelled",
+                            String::new(),
+                            String::new(),
+                        )
+                    } else {
+                        failure_result(
+                            locale,
+                            OperationKind::CheckUpdate,
+                            OperationStep::CheckUpdate,
+                            "check-update-error",
+                            &message,
+                        )
+                    },
+                )
+            }
+        };
+
+        emit_operation_status(&app_handle, &task_snapshot);
+        let _ = app_menu::refresh_status_menu_from_state(&app_handle);
     });
 
     Ok(snapshot)
@@ -1349,6 +1567,10 @@ fn run_install_or_update(
     target_profile: TargetProfile,
 ) -> Result<OperationResult> {
     let locale = current_locale(app);
+    let latest_version_cache = app
+        .state::<AppState>()
+        .latest_openclaw_version_cache
+        .clone();
     let snapshot = update_step(operation_state, OperationStep::Detect);
     emit_operation_status(app, &snapshot);
     emit_operation_event(
@@ -1364,7 +1586,12 @@ fn run_install_or_update(
             "Detecting the target runtime environment",
         ),
     );
-    let mut resolved = resolve_environment(runtime_target.clone(), &target_profile, false);
+    let mut resolved = resolve_environment(
+        runtime_target.clone(),
+        &target_profile,
+        false,
+        &latest_version_cache,
+    );
     emit_operation_event(
         app,
         Some(operation_state),
@@ -1411,8 +1638,7 @@ fn run_install_or_update(
             }
             let ready_after = detect_wsl_status(&target_profile);
             if !bootstrap.success || !ready_after.ready {
-                let remediation =
-                    remediation_for_failed_plan(request.allow_elevation, &bootstrap);
+                let remediation = remediation_for_failed_plan(request.allow_elevation, &bootstrap);
                 let follow_up = if bootstrap.stdout.to_lowercase().contains("restart")
                     || bootstrap.stderr.to_lowercase().contains("restart")
                 {
@@ -1441,7 +1667,12 @@ fn run_install_or_update(
                     remediation,
                 });
             }
-            resolved = resolve_environment(runtime_target.clone(), &target_profile, false);
+            resolved = resolve_environment(
+                runtime_target.clone(),
+                &target_profile,
+                false,
+                &latest_version_cache,
+            );
         }
     }
 
@@ -1518,11 +1749,21 @@ fn run_install_or_update(
                 remediation,
             });
         }
-        resolved = resolve_environment(runtime_target.clone(), &target_profile, false);
+        resolved = resolve_environment(
+            runtime_target.clone(),
+            &target_profile,
+            false,
+            &latest_version_cache,
+        );
     }
 
     if matches!(kind, OperationKind::Update) {
-        resolved = resolve_environment(runtime_target.clone(), &target_profile, true);
+        resolved = resolve_environment(
+            runtime_target.clone(),
+            &target_profile,
+            true,
+            &latest_version_cache,
+        );
         let snapshot = update_step(operation_state, OperationStep::CheckUpdate);
         emit_operation_status(app, &snapshot);
         emit_operation_event(
@@ -2122,8 +2363,9 @@ mod tests {
     use super::{
         apply_ui_preferences_to_snapshot, build_environment_snapshot, cancelled_follow_up,
         inspect_token_state, load_saved_token, persist_profile_atomic,
-        should_treat_plan_as_success, window_background_color_for_theme,
-        window_theme_for_preference, ResolvedEnvironment, RuntimePhase, RuntimeStatus,
+        should_treat_plan_as_success, update_available_from_versions,
+        window_background_color_for_theme, window_theme_for_preference,
+        with_cached_latest_openclaw_version, ResolvedEnvironment, RuntimePhase, RuntimeStatus,
         SettingsStoreAccess, TokenState,
     };
     use crate::{
@@ -2447,9 +2689,18 @@ mod tests {
 
     #[test]
     fn system_theme_maps_to_native_follow_system_behavior() {
-        assert_eq!(window_theme_for_preference(crate::types::ThemePreference::Light), Some(Theme::Light));
-        assert_eq!(window_theme_for_preference(crate::types::ThemePreference::Dark), Some(Theme::Dark));
-        assert_eq!(window_theme_for_preference(crate::types::ThemePreference::System), None);
+        assert_eq!(
+            window_theme_for_preference(crate::types::ThemePreference::Light),
+            Some(Theme::Light)
+        );
+        assert_eq!(
+            window_theme_for_preference(crate::types::ThemePreference::Dark),
+            Some(Theme::Dark)
+        );
+        assert_eq!(
+            window_theme_for_preference(crate::types::ThemePreference::System),
+            None
+        );
     }
 
     #[test]
@@ -2466,6 +2717,62 @@ mod tests {
             window_background_color_for_theme(crate::types::ThemePreference::System),
             None
         );
+    }
+
+    #[test]
+    fn latest_version_cache_reuses_recent_values() {
+        let cache = Arc::new(Mutex::new(None));
+        let mut calls = 0;
+
+        let first = with_cached_latest_openclaw_version(&cache, "macNative:default", 1_000, || {
+            calls += 1;
+            Some("2026.3.10".into())
+        });
+        let second =
+            with_cached_latest_openclaw_version(&cache, "macNative:default", 30_000, || {
+                calls += 1;
+                Some("2026.3.11".into())
+            });
+
+        assert_eq!(first.as_deref(), Some("2026.3.10"));
+        assert_eq!(second.as_deref(), Some("2026.3.10"));
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn latest_version_cache_refreshes_after_ttl_expires() {
+        let cache = Arc::new(Mutex::new(None));
+        let mut calls = 0;
+
+        let first = with_cached_latest_openclaw_version(&cache, "macNative:default", 1_000, || {
+            calls += 1;
+            Some("2026.3.10".into())
+        });
+        let second =
+            with_cached_latest_openclaw_version(&cache, "macNative:default", 61_500, || {
+                calls += 1;
+                Some("2026.3.11".into())
+            });
+
+        assert_eq!(first.as_deref(), Some("2026.3.10"));
+        assert_eq!(second.as_deref(), Some("2026.3.11"));
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn cached_latest_version_still_marks_update_as_available() {
+        assert!(update_available_from_versions(
+            Some("OpenClaw 2026.3.8"),
+            Some("2026.3.10"),
+        ));
+        assert!(!update_available_from_versions(
+            Some("OpenClaw 2026.3.10"),
+            Some("2026.3.10"),
+        ));
+        assert!(!update_available_from_versions(
+            Some("OpenClaw 2026.3.10"),
+            None
+        ));
     }
 
     fn sample_settings() -> PersistedSettings {

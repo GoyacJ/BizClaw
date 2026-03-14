@@ -200,6 +200,9 @@ const busyLabel = computed(() => {
   if (operationTask.value.phase === 'running' && operationTask.value.kind === 'install') {
     return translate('busy.installing')
   }
+  if (operationTask.value.phase === 'running' && operationTask.value.kind === 'checkUpdate') {
+    return translate('busy.checkingUpdate')
+  }
   if (operationTask.value.phase === 'running' && operationTask.value.kind === 'update') {
     return translate('busy.updating')
   }

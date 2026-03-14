@@ -69,7 +69,7 @@ const props = defineProps<{
         </button>
         <button
           class="secondary-button"
-          :disabled="props.state.installBusyAction.value === 'check-update'"
+          :disabled="props.state.installBusyAction.value === 'check-update' || props.state.operationTask.value.phase === 'running' || props.state.operationTask.value.phase === 'cancelling'"
           @click="props.state.checkForUpdates"
         >
           {{ translate('install.checkUpdate') }}

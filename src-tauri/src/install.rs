@@ -330,10 +330,7 @@ pub fn macos_ensure_ssh_plan() -> InstallPlan {
     InstallPlan {
         strategy: "ensure-ssh",
         program: "bash".into(),
-        args: vec![
-            "-lc".into(),
-            "brew install openssh".into(),
-        ],
+        args: vec!["-lc".into(), "brew install openssh".into()],
         envs: Vec::new(),
     }
 }
@@ -460,9 +457,9 @@ fn sh_quote(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        compare_versions, default_runtime_target, fallback_install_plans,
-        install_plans_for_target, looks_like_permission_error, macos_ensure_ssh_plan,
-        official_install_plan, update_plans_for_target, Platform,
+        compare_versions, default_runtime_target, fallback_install_plans, install_plans_for_target,
+        looks_like_permission_error, macos_ensure_ssh_plan, official_install_plan,
+        update_plans_for_target, Platform,
     };
     use crate::types::{RuntimeTarget, TargetProfile};
 

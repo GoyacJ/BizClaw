@@ -133,8 +133,15 @@ export const installOpenClaw = (request: InstallRequest) =>
 
 export const checkOpenClawUpdate = () => (
   canInvokeTauri()
-    ? tauriInvoke<EnvironmentSnapshot>('check_openclaw_update')
-    : detectEnvironment()
+    ? tauriInvoke<OperationTaskSnapshot>('check_openclaw_update')
+    : Promise.resolve({
+      ...idleOperationTask,
+      phase: 'success',
+      kind: 'checkUpdate',
+      step: 'checkUpdate',
+      startedAt: Date.now(),
+      endedAt: Date.now(),
+    })
 )
 
 export const updateOpenClaw = (request: InstallRequest) =>

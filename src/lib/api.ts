@@ -20,6 +20,7 @@ import type {
 const browserUiPreferences: UiPreferences = {
   theme: 'light',
   locale: 'zh-CN',
+  sidebarCollapsed: false,
 }
 
 const browserUiPreferencesStorageKey = 'bizclaw-ui-preferences'
@@ -74,6 +75,7 @@ function readBrowserUiPreferences(): UiPreferences {
     return {
       theme: parsed.theme === 'dark' || parsed.theme === 'system' ? parsed.theme : 'light',
       locale: parsed.locale === 'en-US' ? 'en-US' : 'zh-CN',
+      sidebarCollapsed: parsed.sidebarCollapsed === true,
     }
   } catch {
     return { ...browserUiPreferences }

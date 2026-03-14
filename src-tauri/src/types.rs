@@ -75,6 +75,8 @@ pub struct UiPreferences {
     pub theme: ThemePreference,
     #[serde(default)]
     pub locale: LocalePreference,
+    #[serde(default)]
+    pub sidebar_collapsed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

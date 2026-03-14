@@ -22,6 +22,7 @@ describe('tauri api fallback', () => {
     const preferences: UiPreferences = {
       theme: 'system',
       locale: 'en-US',
+      sidebarCollapsed: true,
     }
 
     await expect(api.detectEnvironment()).resolves.toEqual({
@@ -39,6 +40,7 @@ describe('tauri api fallback', () => {
       uiPreferences: {
         theme: 'light',
         locale: 'zh-CN',
+        sidebarCollapsed: false,
       },
       savedSettings: null,
       runtimeStatus: {
@@ -87,6 +89,7 @@ describe('tauri api fallback', () => {
       uiPreferences: {
         theme: 'light',
         locale: 'zh-CN',
+        sidebarCollapsed: false,
       },
     })
     expect(invoke).not.toHaveBeenCalled()
@@ -112,6 +115,7 @@ describe('tauri api fallback', () => {
       uiPreferences: {
         theme: 'system',
         locale: 'zh-CN',
+        sidebarCollapsed: false,
       },
     })
   })

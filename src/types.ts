@@ -16,6 +16,7 @@ export type LocalePreference = 'zh-CN' | 'en-US'
 export interface UiPreferences {
   theme: ThemePreference
   locale: LocalePreference
+  sidebarCollapsed: boolean
 }
 
 export interface CompanyProfile {

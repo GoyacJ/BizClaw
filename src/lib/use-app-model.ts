@@ -79,6 +79,7 @@ const defaultTargetProfile = (): TargetProfile => ({
 const defaultUiPreferences = (): UiPreferences => ({
   theme: 'light',
   locale: 'zh-CN',
+  sidebarCollapsed: false,
 })
 
 type AppliedTheme = Exclude<ThemePreference, 'system'>
@@ -1121,6 +1122,14 @@ export function useAppModel() {
     await updateUiPreferences({ locale })
   }
 
+  async function setSidebarCollapsed(sidebarCollapsed: boolean) {
+    if (uiPreferences.value.sidebarCollapsed === sidebarCollapsed) {
+      return
+    }
+
+    await updateUiPreferences({ sidebarCollapsed })
+  }
+
   return {
     activeSection,
     advancedOpen,
@@ -1171,6 +1180,7 @@ export function useAppModel() {
     saveAndTest,
     saveBusy,
     saveOnly,
+    setSidebarCollapsed,
     sshPasswordInput,
     startHostedRuntime,
     statusItems,

@@ -2364,6 +2364,7 @@ mod tests {
             UiPreferences {
                 theme: crate::types::ThemePreference::Dark,
                 locale: LocalePreference::EnUs,
+                sidebar_collapsed: true,
             },
         );
 

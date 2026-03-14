@@ -25,6 +25,7 @@ vi.mock('@/lib/use-app-model', () => {
     uiPreferences: {
       theme: 'light',
       locale: 'zh-CN',
+      sidebarCollapsed: false,
     },
     savedSettings: null,
     runtimeStatus: {
@@ -149,6 +150,7 @@ vi.mock('@/lib/use-app-model', () => {
       saveAndTest: vi.fn(),
       saveBusy: ref(false),
       saveOnly: vi.fn(),
+      setSidebarCollapsed: vi.fn(),
       sshPasswordInput: ref(''),
       sshStateLabel: ref('已就绪'),
       startHostedRuntime: vi.fn(),
@@ -160,6 +162,11 @@ vi.mock('@/lib/use-app-model', () => {
       ]),
       stopHostedRuntime: vi.fn(),
       stopOperation: vi.fn(),
+      uiPreferences: ref({
+        theme: 'light',
+        locale: 'zh-CN',
+        sidebarCollapsed: false,
+      }),
       targetProfile: reactive({
         wslDistro: 'Ubuntu',
       }),

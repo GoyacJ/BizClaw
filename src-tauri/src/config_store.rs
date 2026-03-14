@@ -150,6 +150,7 @@ mod tests {
         let preferences = UiPreferences {
             theme: ThemePreference::System,
             locale: LocalePreference::EnUs,
+            sidebar_collapsed: true,
         };
 
         store.save(&preferences).unwrap();
@@ -179,6 +180,7 @@ mod tests {
             Some(UiPreferences {
                 theme: ThemePreference::Dark,
                 locale: LocalePreference::EnUs,
+                sidebar_collapsed: false,
             }),
         );
     }
@@ -193,12 +195,14 @@ mod tests {
             .save(&UiPreferences {
                 theme: ThemePreference::Dark,
                 locale: LocalePreference::EnUs,
+                sidebar_collapsed: true,
             })
             .unwrap();
 
         let content = std::fs::read_to_string(path).unwrap();
 
         assert!(content.contains(r#""locale": "en-US""#));
+        assert!(content.contains(r#""sidebarCollapsed": true"#));
     }
 
     #[test]
@@ -222,6 +226,7 @@ mod tests {
             Some(UiPreferences {
                 theme: ThemePreference::System,
                 locale: LocalePreference::ZhCn,
+                sidebar_collapsed: false,
             }),
         );
     }
@@ -236,6 +241,7 @@ mod tests {
             .save(&UiPreferences {
                 theme: ThemePreference::System,
                 locale: LocalePreference::EnUs,
+                sidebar_collapsed: false,
             })
             .unwrap();
 
@@ -265,6 +271,7 @@ mod tests {
             Some(UiPreferences {
                 theme: ThemePreference::Dark,
                 locale: LocalePreference::EnUs,
+                sidebar_collapsed: false,
             }),
         );
     }

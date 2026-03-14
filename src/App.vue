@@ -60,6 +60,7 @@ const {
   saveAndTest,
   saveBusy,
   saveOnly,
+  setSidebarCollapsed: persistSidebarCollapsed,
   sshPasswordInput,
   sshStateLabel,
   startHostedRuntime,
@@ -86,9 +87,14 @@ const sections = computed(() => ([
 ] as const))
 
 const sectionTitle = computed(() => sections.value.find((item) => item.key === activeSection.value)?.label ?? translate('nav.overview'))
+const sidebarCollapsed = computed(() => uiPreferences.value.sidebarCollapsed)
 
 const selectSection = (sectionKey: string) => {
   activeSection.value = sectionKey as typeof activeSection.value
+}
+
+const toggleSidebarCollapsed = () => {
+  void persistSidebarCollapsed(!sidebarCollapsed.value)
 }
 
 const goInstall = () => {
@@ -227,11 +233,13 @@ function connectionStepLabel(status: ConnectionTestModalStep['status']) {
 </script>
 
 <template>
-  <main class="ops-shell">
+  <main class="ops-shell" :data-sidebar-collapsed="String(sidebarCollapsed)">
     <AppSidebar
       :sections="sections"
       :active-section="activeSection"
+      :collapsed="sidebarCollapsed"
       @select-section="selectSection"
+      @toggle-collapse="toggleSidebarCollapsed"
     />
 
     <section class="workspace">

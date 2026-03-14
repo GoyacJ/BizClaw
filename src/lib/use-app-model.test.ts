@@ -187,12 +187,14 @@ describe('useAppModel', () => {
         uiPreferences: {
           theme: 'dark',
           locale: 'en-US',
+          sidebarCollapsed: false,
         },
       }))
       .mockResolvedValue(createSnapshot({
         uiPreferences: {
           theme: 'dark',
           locale: 'zh-CN',
+          sidebarCollapsed: false,
         },
       }))
     apiMocks.streamLogs.mockResolvedValue([])
@@ -201,6 +203,7 @@ describe('useAppModel', () => {
     apiMocks.saveUiPreferences.mockResolvedValue({
       theme: 'dark',
       locale: 'zh-CN',
+      sidebarCollapsed: false,
     })
     bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
     apiMocks.onRuntimeLog.mockResolvedValue(() => {})
@@ -228,6 +231,7 @@ describe('useAppModel', () => {
     expect(model.uiPreferences.value).toEqual({
       theme: 'dark',
       locale: 'en-US',
+      sidebarCollapsed: false,
     })
     expect(model.tokenStateLabel.value).toBe('Token saved')
 
@@ -237,6 +241,7 @@ describe('useAppModel', () => {
     expect(apiMocks.saveUiPreferences).toHaveBeenCalledWith({
       theme: 'dark',
       locale: 'zh-CN',
+      sidebarCollapsed: false,
     })
     expect(model.uiPreferences.value.locale).toBe('zh-CN')
     expect(model.tokenStateLabel.value).toBe('Token 已保存')
@@ -253,6 +258,7 @@ describe('useAppModel', () => {
       uiPreferences: {
         theme: 'system',
         locale: 'zh-CN',
+        sidebarCollapsed: false,
       },
     }))
     apiMocks.streamLogs.mockResolvedValue([])
@@ -301,6 +307,7 @@ describe('useAppModel', () => {
     expect(apiMocks.saveUiPreferences).toHaveBeenCalledWith({
       theme: 'light',
       locale: 'zh-CN',
+      sidebarCollapsed: false,
     })
     expect(document.documentElement.dataset.theme).toBe('light')
   })
@@ -311,12 +318,14 @@ describe('useAppModel', () => {
         uiPreferences: {
           theme: 'light',
           locale: 'zh-CN',
+          sidebarCollapsed: false,
         },
       }))
       .mockResolvedValue(createSnapshot({
         uiPreferences: {
           theme: 'light',
           locale: 'en-US',
+          sidebarCollapsed: false,
         },
       }))
     apiMocks.streamLogs.mockResolvedValue([])
@@ -325,6 +334,7 @@ describe('useAppModel', () => {
     apiMocks.saveUiPreferences.mockResolvedValue({
       theme: 'light',
       locale: 'en-US',
+      sidebarCollapsed: false,
     })
     bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
     apiMocks.onRuntimeLog.mockResolvedValue(() => {})
@@ -630,6 +640,7 @@ function createSnapshot(overrides: Partial<EnvironmentSnapshot> = {}): Environme
     uiPreferences: {
       theme: 'light',
       locale: 'zh-CN',
+      sidebarCollapsed: false,
     },
     savedSettings: null,
     runtimeStatus: {

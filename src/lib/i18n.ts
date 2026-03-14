@@ -10,6 +10,8 @@ const messages = {
       connection: '连接与配置',
       runtime: '运行日志',
       settings: '设置',
+      collapseSidebar: '折叠侧边栏',
+      expandSidebar: '展开侧边栏',
     },
     workspace: {
       eyebrow: '工作区',
@@ -289,6 +291,8 @@ const messages = {
       connection: 'Connection & Config',
       runtime: 'Runtime Log',
       settings: 'Settings',
+      collapseSidebar: 'Collapse sidebar',
+      expandSidebar: 'Expand sidebar',
     },
     workspace: {
       eyebrow: 'Workspace',

@@ -157,6 +157,7 @@ function createSnapshot(
     uiPreferences: {
       theme: 'light',
       locale: 'zh-CN',
+      sidebarCollapsed: false,
     },
     savedSettings: null,
     runtimeStatus: {

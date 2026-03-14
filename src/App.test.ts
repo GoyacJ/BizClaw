@@ -6,7 +6,21 @@ import type { EnvironmentSnapshot, OperationTaskSnapshot } from '@/types'
 const mockUiPreferences = {
   theme: 'light' as const,
   locale: 'zh-CN' as const,
+  sidebarCollapsed: false,
 }
+
+let uiPreferencesRef = ref({
+  theme: mockUiPreferences.theme,
+  locale: mockUiPreferences.locale,
+  sidebarCollapsed: mockUiPreferences.sidebarCollapsed,
+})
+
+const setSidebarCollapsedMock = vi.fn(async (sidebarCollapsed: boolean) => {
+  uiPreferencesRef.value = {
+    ...uiPreferencesRef.value,
+    sidebarCollapsed,
+  }
+})
 
 vi.mock('@/lib/runtime-view', () => ({
   operationStepLabel: (step: string) => step,
@@ -30,6 +44,7 @@ vi.mock('@/lib/use-app-model', () => {
     uiPreferences: {
       theme: 'light',
       locale: 'zh-CN',
+      sidebarCollapsed: false,
     },
     savedSettings: {
       companyProfile: {
@@ -223,16 +238,14 @@ vi.mock('@/lib/use-app-model', () => {
       gatewayStateTone: ref('neutral'),
       tokenStateLabel: ref('Token 已保存'),
       tokenStateToneValue: ref('success'),
-      uiPreferences: ref({
-        theme: mockUiPreferences.theme,
-        locale: mockUiPreferences.locale,
-      }),
+      uiPreferences: uiPreferencesRef,
       updateCli: vi.fn(),
       userProfile: reactive({
         displayName: 'BizClaw',
         autoConnect: true,
         runInBackground: true,
       }),
+      setSidebarCollapsed: setSidebarCollapsedMock,
     }),
   }
 })
@@ -248,6 +261,13 @@ describe('App operations center', () => {
     app = null
     mockUiPreferences.theme = 'light'
     mockUiPreferences.locale = 'zh-CN'
+    mockUiPreferences.sidebarCollapsed = false
+    uiPreferencesRef.value = {
+      theme: mockUiPreferences.theme,
+      locale: mockUiPreferences.locale,
+      sidebarCollapsed: mockUiPreferences.sidebarCollapsed,
+    }
+    setSidebarCollapsedMock.mockClear()
   })
 
   it('renders the compact sidebar navigation shell', async () => {
@@ -270,6 +290,33 @@ describe('App operations center', () => {
     expect(host.textContent).not.toContain('操作中心')
     expect(host.textContent).not.toContain('macOS 本机')
     expect(host.querySelector('.sidebar-summary')).toBeNull()
+  })
+
+  it('lets the sidebar collapse into an icon rail while preserving accessible labels', async () => {
+    const { default: App } = await import('./App.vue')
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+
+    app = createApp(App)
+    app.mount(host)
+    await nextTick()
+
+    const sidebar = host.querySelector('.sidebar')
+    const toggle = host.querySelector<HTMLButtonElement>('.sidebar-toggle')
+
+    expect(sidebar?.getAttribute('data-collapsed')).toBe('false')
+    expect(toggle?.getAttribute('aria-label')).toContain('折叠')
+
+    toggle?.click()
+    await nextTick()
+
+    expect(setSidebarCollapsedMock).toHaveBeenCalledWith(true)
+    expect(host.querySelector('.sidebar')?.getAttribute('data-collapsed')).toBe('true')
+
+    const firstNavButton = host.querySelector<HTMLButtonElement>('.sidebar-nav .nav-button')
+    expect(firstNavButton?.getAttribute('aria-label')).toBe('概览')
+    expect(firstNavButton?.title).toBe('概览')
   })
 
   it('shows WSL distro and SSH password in advanced connection settings', async () => {
@@ -397,7 +444,25 @@ describe('App operations center', () => {
     expect(statusBar?.textContent).toContain('OpenClaw')
     expect(statusBar?.textContent).toContain('SSH')
     expect(statusBar?.textContent).toContain('Gateway')
-    expect(statusBar?.textContent).toContain('未连接')
+  })
+
+  it('renders named footer items with status dots instead of visible status text', async () => {
+    const { default: App } = await import('./App.vue')
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+
+    app = createApp(App)
+    app.mount(host)
+    await nextTick()
+
+    const statusBar = host.querySelector('.status-bar')
+    const dots = host.querySelectorAll('.status-bar-item .status-indicator')
+
+    expect(statusBar).not.toBeNull()
+    expect(dots).toHaveLength(4)
+    expect(statusBar?.textContent).not.toContain('未连接')
+    expect(host.querySelector('.status-bar-item[data-tone="neutral"] .status-indicator')?.getAttribute('title')).toBe('未连接')
   })
 
   it('keeps the runtime page focused on logs only while install work can continue in background', async () => {

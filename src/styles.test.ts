@@ -17,7 +17,15 @@ describe('shell layout styles', () => {
   it('pins the status bar to the bottom as a compact project-style strip', () => {
     expect(styles).toMatch(/\.status-bar\s*\{[^}]*position:\s*fixed;[^}]*bottom:\s*0;[^}]*min-height:\s*var\(--status-bar-height\);/s)
     expect(styles).toMatch(/\.status-bar-item\s*\{[^}]*display:\s*inline-flex;[^}]*padding:\s*4px\s*9px;[^}]*border-radius:\s*999px;/s)
-    expect(styles).toMatch(/\.status-bar-item span\s*\{[^}]*font-size:\s*0\.68rem;/s)
+    expect(styles).toMatch(/\.status-bar-item-label\s*\{[^}]*font-size:\s*0\.68rem;/s)
+    expect(styles).toMatch(/\.status-indicator\s*\{[^}]*width:\s*10px;[^}]*height:\s*10px;[^}]*border-radius:\s*999px;/s)
+  })
+
+  it('supports a narrower expanded sidebar and a collapsed icon rail', () => {
+    expect(styles).toMatch(/--sidebar-width-expanded:\s*220px;/)
+    expect(styles).toMatch(/--sidebar-width-collapsed:\s*78px;/)
+    expect(styles).toMatch(/\.ops-shell\s*\{[^}]*grid-template-columns:\s*var\(--sidebar-width-expanded\)\s*minmax\(0,\s*1fr\);/s)
+    expect(styles).toMatch(/\.ops-shell\[data-sidebar-collapsed="true"\]\s*\{[^}]*grid-template-columns:\s*var\(--sidebar-width-collapsed\)\s*minmax\(0,\s*1fr\);/s)
   })
 
   it('lets the connection test modal scroll when the output is tall', () => {

@@ -30,4 +30,12 @@ describe('normalizeTauriSigningKey', () => {
   it('fails fast with a helpful error when the secret still contains invalid characters', () => {
     expect(() => normalizeTauriSigningKey('abc%zz')).toThrowError(/TAURI_SIGNING_PRIVATE_KEY/u)
   })
+
+  it('extracts the canonical key when the secret was pasted as an env assignment', () => {
+    const pasted = 'TAURI_SIGNING_PRIVATE_KEY=dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5ClJXUlRZMEl5dWpodzVBQTdVajVmRTJiUDZJK2hNMkZyU0FwczU0YzlGcjBycTNMd2hxSUFBQkFBQUFBQUFBQUFBQUlBQUFBQWU2c0RIMlVIOGVlM1BkTnF1cjlDcHNTZ0dhcEFoY2hLTnE5SldidUc3SnpXdUtxVU9qdEVTMStacURKL3lZSjhFbkwrVThOVkx2Y1V0SUhxbzhuOGp1aklzdXR2QzNoS3FEbXduWm5rRHBKeUxYMDVnRGZrOWRVRG1aRjN3aW9RdkZ4cFdNRjZWTWs9Cg=='
+
+    expect(normalizeTauriSigningKey(pasted)).toBe(
+      'dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5ClJXUlRZMEl5dWpodzVBQTdVajVmRTJiUDZJK2hNMkZyU0FwczU0YzlGcjBycTNMd2hxSUFBQkFBQUFBQUFBQUFBQUlBQUFBQWU2c0RIMlVIOGVlM1BkTnF1cjlDcHNTZ0dhcEFoY2hLTnE5SldidUc3SnpXdUtxVU9qdEVTMStacURKL3lZSjhFbkwrVThOVkx2Y1V0SUhxbzhuOGp1aklzdXR2QzNoS3FEbXduWm5rRHBKeUxYMDVnRGZrOWRVRG1aRjN3aW9RdkZ4cFdNRjZWTWs9Cg==',
+    )
+  })
 })

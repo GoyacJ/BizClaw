@@ -23,11 +23,17 @@ export function normalizeTauriSigningKey(value) {
   normalized = normalized.replace(/^['"]|['"]$/gu, '')
   normalized = normalized.replace(/\\r\\n/gu, '\n').replace(/\\n/gu, '\n').replace(/\\r/gu, '\r')
   normalized = normalized.trim()
-  if (normalized.startsWith('untrusted comment:')) {
-    return Buffer.from(normalized.endsWith('\n') ? normalized : `${normalized}\n`).toString('base64')
+  const commentIndex = normalized.indexOf('untrusted comment:')
+  if (commentIndex >= 0) {
+    const rawKey = normalized.slice(commentIndex)
+    return Buffer.from(rawKey.endsWith('\n') ? rawKey : `${rawKey}\n`).toString('base64')
   }
 
-  const compact = normalized.replace(/\s+/gu, '')
+  const candidates = normalized.match(/dW50cnVzdGVk[A-Za-z0-9+/=]{50,}/gu)
+    ?? normalized.match(/[A-Za-z0-9+/=]{100,}/gu)
+    ?? []
+  const compact = (candidates.sort((left, right) => right.length - left.length)[0] ?? normalized)
+    .replace(/\s+/gu, '')
   if (!/^[A-Za-z0-9+/=]+$/u.test(compact)) {
     throw new Error('TAURI_SIGNING_PRIVATE_KEY contains unexpected characters. Store the exact key content without extra encoding.')
   }

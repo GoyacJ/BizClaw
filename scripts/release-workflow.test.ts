@@ -51,13 +51,13 @@ describe('release workflow', () => {
     expect(readJobBlock('publish-release')).toMatch(/uses:\s*actions\/download-artifact@v7/u)
   })
 
-  it('publishes releases without relying on a checked out git repository', () => {
+  it('checks out the repository in publish-release to build latest.json from tracked scripts', () => {
     const jobBlock = readJobBlock('publish-release')
 
+    expect(jobBlock).toMatch(/uses:\s*actions\/checkout@v6/u)
     expect(jobBlock).toMatch(/gh release view "\$\{GITHUB_REF_NAME\}" --repo "\$\{GITHUB_REPOSITORY\}"/u)
     expect(jobBlock).toMatch(/gh release create "\$\{GITHUB_REF_NAME\}"[\s\S]*--repo "\$\{GITHUB_REPOSITORY\}"/u)
     expect(jobBlock).toMatch(/gh release upload "\$\{GITHUB_REF_NAME\}" --repo "\$\{GITHUB_REPOSITORY\}"/u)
-    expect(jobBlock).not.toMatch(/uses:\s*actions\/checkout@/u)
   })
 
   it('uploads only downloaded release files, not artifact directories', () => {
@@ -92,6 +92,33 @@ describe('release workflow', () => {
     expect(jobBlock).toMatch(/bundle\/portable/u)
     expect(jobBlock).toMatch(/\.zip/u)
     expect(jobBlock).toMatch(/bundle\/msi\/\*\.msi[\s\S]*bundle\/portable\/\*\.zip/u)
+  })
+
+  it('signs updater artifacts during macOS and Windows builds', () => {
+    expect(readJobBlock('build-macos')).toMatch(/TAURI_SIGNING_PRIVATE_KEY/u)
+    expect(readJobBlock('build-macos')).toMatch(/TAURI_SIGNING_PRIVATE_KEY_PASSWORD/u)
+    expect(readJobBlock('build-windows')).toMatch(/TAURI_SIGNING_PRIVATE_KEY/u)
+    expect(readJobBlock('build-windows')).toMatch(/TAURI_SIGNING_PRIVATE_KEY_PASSWORD/u)
+  })
+
+  it('uploads updater artifacts and publishes latest.json', () => {
+    const macJob = readJobBlock('build-macos')
+    const windowsJob = readJobBlock('build-windows')
+    const publishJob = readJobBlock('publish-release')
+
+    expect(macJob).toMatch(/bundle\/macos\/\*\.app\.tar\.gz/u)
+    expect(macJob).toMatch(/bundle\/macos\/\*\.app\.tar\.gz\.sig/u)
+    expect(windowsJob).toMatch(/bundle\/msi\/\*\.msi\.sig/u)
+    expect(publishJob).toMatch(/node \.\/scripts\/build-updater-manifest\.mjs/u)
+    expect(publishJob).toMatch(/latest\.json/u)
+  })
+
+  it('verifies the published updater assets after uploading the release files', () => {
+    const publishJob = readJobBlock('publish-release')
+
+    expect(publishJob).toMatch(/gh release view "\$\{GITHUB_REF_NAME\}"[\s\S]*--json assets/u)
+    expect(publishJob).toMatch(/node \.\/scripts\/verify-updater-release\.mjs/u)
+    expect(publishJob).toMatch(/release-artifacts\/release\.json/u)
   })
 })
 

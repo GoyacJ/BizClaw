@@ -1,5 +1,13 @@
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
 
+import {
+  checkForBizClawUpdate,
+  describeBizClawUpdaterError,
+  getCurrentBizClawVersion,
+  relaunchBizClaw,
+  type BizClawUpdateDownloadEvent,
+  type PendingBizClawUpdate,
+} from '@/lib/bizclaw-updater'
 import {
   checkOpenClawUpdate,
   detectEnvironment,
@@ -38,6 +46,7 @@ import {
   tokenStatusTone,
 } from '@/lib/runtime-view'
 import type {
+  BizClawUpdateState,
   CompanyProfileDraft,
   ConnectionTestEvent,
   ConnectionTestModalState,
@@ -107,6 +116,19 @@ function createIdleOperationTask(): OperationTaskSnapshot {
   }
 }
 
+function createBizClawUpdateState(): BizClawUpdateState {
+  return {
+    phase: 'idle',
+    currentVersion: null,
+    latestVersion: null,
+    releaseNotes: null,
+    publishedAt: null,
+    downloadedBytes: 0,
+    totalBytes: null,
+    errorMessage: null,
+  }
+}
+
 export function useAppModel() {
   const activeSection = ref<'overview' | 'install' | 'connection' | 'runtime'>('overview')
   const environment = ref<EnvironmentSnapshot | null>(null)
@@ -116,6 +138,7 @@ export function useAppModel() {
   const lastError = ref<string | null>(null)
   const lastErrorAction = ref<string | null>(null)
   const installBusyAction = ref<'check-update' | null>(null)
+  const bizclawUpdate = ref<BizClawUpdateState>(createBizClawUpdateState())
   const manualInstallBusy = ref(false)
   const saveBusy = ref(false)
   const connectionTestBusy = ref(false)
@@ -130,6 +153,7 @@ export function useAppModel() {
   const targetProfile = reactive(defaultTargetProfile())
   const connectionTestModal = reactive<ConnectionTestModalState>(createConnectionTestModalState())
   const unlistenCallbacks: Array<() => void> = []
+  const pendingBizClawUpdate = shallowRef<PendingBizClawUpdate | null>(null)
 
   const companyProfileComplete = computed(() => isCompanyProfileDraftComplete(companyProfile))
   const displayNameReady = computed(() => userProfile.displayName.trim().length > 0)
@@ -151,6 +175,11 @@ export function useAppModel() {
     && !connectionActionBusy.value
   ))
   const installActionBusy = computed(() => installBusyAction.value !== null || activeOperationBusy.value)
+  const bizclawUpdateBusy = computed(() => (
+    bizclawUpdate.value.phase === 'checking'
+    || bizclawUpdate.value.phase === 'downloading'
+    || bizclawUpdate.value.phase === 'installing'
+  ))
   const connectionTestDisabledReason = computed(() => {
     if (connectionActionBusy.value || installActionBusy.value) {
       return '当前操作进行中，请稍候。'
@@ -256,6 +285,78 @@ export function useAppModel() {
     operationTask.value,
     installBusyAction.value,
   ))
+  const bizclawUpdateBlockedReason = computed(() => {
+    if (activeOperationBusy.value) {
+      return 'OpenClaw 安装或更新进行中时不能更新 BizClaw。'
+    }
+
+    if (runtimeStatus.value.phase === 'connecting' || runtimeStatus.value.phase === 'running') {
+      return '托管运行中时不能更新 BizClaw，请先停止托管。'
+    }
+
+    return null
+  })
+  const bizclawUpdateTone = computed<'neutral' | 'active' | 'success' | 'error'>(() => {
+    switch (bizclawUpdate.value.phase) {
+      case 'checking':
+      case 'downloading':
+      case 'installing':
+      case 'available':
+      case 'readyToRestart':
+        return 'active'
+      case 'upToDate':
+        return 'success'
+      case 'error':
+        return 'error'
+      default:
+        return 'neutral'
+    }
+  })
+  const bizclawUpdateActionLabel = computed(() => {
+    switch (bizclawUpdate.value.phase) {
+      case 'checking':
+        return '检查更新中'
+      case 'upToDate':
+        return '已是最新版本'
+      case 'available':
+        return '检测到新版本'
+      case 'downloading':
+        return '下载中'
+      case 'installing':
+        return '安装中'
+      case 'readyToRestart':
+        return '等待重启'
+      case 'error':
+        return '更新失败'
+      default:
+        return bizclawUpdate.value.currentVersion ? '已加载当前版本' : '检测当前版本中'
+    }
+  })
+  const bizclawUpdatePrimaryAction = computed(() => (
+    bizclawUpdate.value.phase === 'readyToRestart' ? '立即重启' : '立即更新'
+  ))
+  const bizclawUpdateDetail = computed(() => {
+    switch (bizclawUpdate.value.phase) {
+      case 'checking':
+        return '正在从 GitHub Releases 获取最新 BizClaw 版本。'
+      case 'upToDate':
+        return `当前版本 ${bizclawUpdate.value.currentVersion ?? '未知'} 已是最新版本。`
+      case 'available':
+        return `当前 ${bizclawUpdate.value.currentVersion ?? '未知'}，可更新到 ${bizclawUpdate.value.latestVersion ?? '最新版本'}`
+      case 'downloading':
+        return '正在下载 BizClaw 更新包。'
+      case 'installing':
+        return '更新包下载完成，正在安装。'
+      case 'readyToRestart':
+        return `BizClaw ${bizclawUpdate.value.latestVersion ?? '新版本'} 已安装，重启后生效。`
+      case 'error':
+        return bizclawUpdate.value.errorMessage ?? 'BizClaw 更新未完成。'
+      default:
+        return bizclawUpdate.value.currentVersion
+          ? `当前 BizClaw 版本为 ${bizclawUpdate.value.currentVersion}。`
+          : '正在读取当前 BizClaw 版本。'
+    }
+  })
   const operationHeadline = computed(() => latestOperationDetail(operationEvents.value))
   const runtimeStatus = computed<RuntimeStatus>(() => environment.value?.runtimeStatus ?? {
     phase: 'checking',
@@ -372,6 +473,23 @@ export function useAppModel() {
     await refreshEnvironment()
     operationTask.value = await getOperationStatus()
     operationEvents.value = await getOperationEvents()
+  }
+
+  async function syncBizClawCurrentVersion() {
+    try {
+      const version = await getCurrentBizClawVersion()
+      bizclawUpdate.value = {
+        ...bizclawUpdate.value,
+        currentVersion: version,
+        errorMessage: null,
+      }
+    } catch (error) {
+      bizclawUpdate.value = {
+        ...bizclawUpdate.value,
+        phase: 'error',
+        errorMessage: describeBizClawUpdaterError(error),
+      }
+    }
   }
 
   function clearActionError(action: string) {
@@ -526,6 +644,32 @@ export function useAppModel() {
     }
   }
 
+  function applyBizClawDownloadEvent(entry: BizClawUpdateDownloadEvent) {
+    if (entry.event === 'Started') {
+      bizclawUpdate.value = {
+        ...bizclawUpdate.value,
+        phase: 'downloading',
+        downloadedBytes: 0,
+        totalBytes: entry.data.contentLength ?? null,
+      }
+      return
+    }
+
+    if (entry.event === 'Progress') {
+      bizclawUpdate.value = {
+        ...bizclawUpdate.value,
+        phase: 'downloading',
+        downloadedBytes: bizclawUpdate.value.downloadedBytes + (entry.data.chunkLength ?? 0),
+      }
+      return
+    }
+
+    bizclawUpdate.value = {
+      ...bizclawUpdate.value,
+      phase: 'installing',
+    }
+  }
+
   async function installCli() {
     activeSection.value = 'install'
     resetOperationState()
@@ -579,6 +723,87 @@ export function useAppModel() {
     }
 
     applyOperationTaskSnapshot(result)
+  }
+
+  async function checkBizClawUpdates() {
+    activeSection.value = 'install'
+    bizclawUpdate.value = {
+      ...bizclawUpdate.value,
+      phase: 'checking',
+      errorMessage: null,
+      downloadedBytes: 0,
+      totalBytes: null,
+    }
+    pendingBizClawUpdate.value = null
+
+    try {
+      const update = await checkForBizClawUpdate()
+      if (!update) {
+        bizclawUpdate.value = {
+          ...bizclawUpdate.value,
+          phase: 'upToDate',
+          latestVersion: bizclawUpdate.value.currentVersion,
+          releaseNotes: null,
+          publishedAt: null,
+        }
+        return
+      }
+
+      pendingBizClawUpdate.value = update
+      bizclawUpdate.value = {
+        ...bizclawUpdate.value,
+        phase: 'available',
+        latestVersion: update.version,
+        releaseNotes: update.body,
+        publishedAt: update.date,
+      }
+    } catch (error) {
+      bizclawUpdate.value = {
+        ...bizclawUpdate.value,
+        phase: 'error',
+        errorMessage: describeBizClawUpdaterError(error),
+      }
+    }
+  }
+
+  async function installBizClawUpdate() {
+    if (!pendingBizClawUpdate.value || bizclawUpdateBlockedReason.value) {
+      return
+    }
+
+    bizclawUpdate.value = {
+      ...bizclawUpdate.value,
+      phase: 'downloading',
+      errorMessage: null,
+      downloadedBytes: 0,
+      totalBytes: null,
+    }
+
+    try {
+      await pendingBizClawUpdate.value.downloadAndInstall((entry) => {
+        applyBizClawDownloadEvent(entry)
+      })
+      bizclawUpdate.value = {
+        ...bizclawUpdate.value,
+        phase: 'readyToRestart',
+      }
+    } catch (error) {
+      bizclawUpdate.value = {
+        ...bizclawUpdate.value,
+        phase: 'error',
+        errorMessage: describeBizClawUpdaterError(error),
+      }
+    }
+  }
+
+  function deferBizClawRestart() {
+    if (bizclawUpdate.value.phase !== 'readyToRestart') {
+      return
+    }
+  }
+
+  async function restartBizClaw() {
+    await relaunchBizClaw()
   }
 
   async function launchManualInstall() {
@@ -704,6 +929,7 @@ export function useAppModel() {
 
   onMounted(async () => {
     await refreshOperationalState()
+    await syncBizClawCurrentVersion()
     unlistenCallbacks.push(
       await onRuntimeLog((entry) => {
         logs.value = [...logs.value, entry].slice(-400)
@@ -752,6 +978,13 @@ export function useAppModel() {
   return {
     activeSection,
     advancedOpen,
+    bizclawUpdate,
+    bizclawUpdateActionLabel,
+    bizclawUpdateBlockedReason,
+    bizclawUpdateDetail,
+    bizclawUpdatePrimaryAction,
+    bizclawUpdateTone,
+    checkBizClawUpdates,
     canSaveProfile,
     canStartHostedRuntime,
     canTestConnection,
@@ -764,9 +997,11 @@ export function useAppModel() {
     connectionTestCloseDisabled,
     connectionTestDisabledReason,
     connectionTestModal,
+    deferBizClawRestart,
     environment,
     installBusyAction,
     installCli,
+    installBizClawUpdate,
     launchManualInstall,
     logs,
     manualInstallBusy,
@@ -786,6 +1021,7 @@ export function useAppModel() {
     runtimeStartBusy,
     runtimeStatus,
     runtimeStopBusy,
+    restartBizClaw,
     saveAndTest,
     saveBusy,
     saveOnly,

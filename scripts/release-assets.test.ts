@@ -11,7 +11,14 @@ const iconsDir = resolve(rootDir, 'src-tauri', 'icons')
 const tauriConfigPath = resolve(rootDir, 'src-tauri', 'tauri.conf.json')
 const tauriConfig = JSON.parse(readFileSync(tauriConfigPath, 'utf8')) as {
   bundle?: {
+    createUpdaterArtifacts?: boolean | string
     icon?: string[]
+  }
+  plugins?: {
+    updater?: {
+      endpoints?: string[]
+      pubkey?: string
+    }
   }
 }
 
@@ -32,5 +39,13 @@ describe('release assets', () => {
 
   it('declares the desktop icon set in tauri.conf.json', () => {
     expect(tauriConfig.bundle?.icon).toEqual(desktopIcons)
+  })
+
+  it('enables updater artifacts and configures a signed latest.json endpoint', () => {
+    expect(tauriConfig.bundle?.createUpdaterArtifacts).toBe(true)
+    expect(tauriConfig.plugins?.updater?.endpoints).toEqual([
+      'https://github.com/GoyacJ/BizClaw/releases/latest/download/latest.json',
+    ])
+    expect(tauriConfig.plugins?.updater?.pubkey).toBeTruthy()
   })
 })

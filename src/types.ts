@@ -68,6 +68,27 @@ export interface EnvironmentSnapshot {
   wslStatus: WslStatus | null
 }
 
+export type BizClawUpdatePhase =
+  | 'idle'
+  | 'checking'
+  | 'upToDate'
+  | 'available'
+  | 'downloading'
+  | 'installing'
+  | 'readyToRestart'
+  | 'error'
+
+export interface BizClawUpdateState {
+  phase: BizClawUpdatePhase
+  currentVersion: string | null
+  latestVersion: string | null
+  releaseNotes: string | null
+  publishedAt: string | null
+  downloadedBytes: number
+  totalBytes: number | null
+  errorMessage: string | null
+}
+
 export interface InstallRequest {
   preferOfficial: boolean
   allowElevation: boolean

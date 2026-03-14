@@ -150,13 +150,32 @@ vi.mock('@/lib/use-app-model', () => {
         tone: 'active',
       }),
       overviewCards: ref([
-        {
-          label: '目标运行时',
-          value: 'Windows WSL',
-          detail: 'Ubuntu 已就绪',
-          tone: 'success',
-        },
-      ]),
+      {
+        label: '目标运行时',
+        value: 'Windows WSL',
+        detail: 'Ubuntu 已就绪',
+        tone: 'success',
+      },
+    ]),
+      bizclawUpdate: ref({
+        phase: 'available',
+        currentVersion: '0.1.8',
+        latestVersion: '0.1.9',
+        releaseNotes: 'Bug fixes',
+        publishedAt: '2026-03-14T00:00:00.000Z',
+        downloadedBytes: 0,
+        totalBytes: null,
+        errorMessage: null,
+      }),
+      bizclawUpdateActionLabel: ref('检测到新版本'),
+      bizclawUpdateDetail: ref('当前 0.1.8，可更新到 0.1.9'),
+      bizclawUpdatePrimaryAction: ref('立即更新'),
+      bizclawUpdateTone: ref('active'),
+      bizclawUpdateBlockedReason: ref<string | null>(null),
+      checkBizClawUpdates: vi.fn(),
+      installBizClawUpdate: vi.fn(),
+      restartBizClaw: vi.fn(),
+      deferBizClawRestart: vi.fn(),
       platformLabel: ref('Windows WSL'),
       profileError: ref<string | null>(null),
       refreshEnvironment: vi.fn(),
@@ -296,6 +315,29 @@ describe('App operations center', () => {
     expect(host.textContent).toContain('安装 / 更新输出')
     expect(host.textContent).toContain('installing...')
     expect(host.textContent).toContain('停止')
+  })
+
+  it('renders a dedicated BizClaw update card on the install page', async () => {
+    const { default: App } = await import('./App.vue')
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+
+    app = createApp(App)
+    app.mount(host)
+    await nextTick()
+
+    const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+      .find((node) => node.textContent?.includes('安装与更新'))
+    button?.click()
+    await nextTick()
+
+    expect(host.textContent).toContain('BizClaw 应用更新')
+    expect(host.textContent).toContain('当前 BizClaw 版本')
+    expect(host.textContent).toContain('最新 BizClaw 版本')
+    expect(host.textContent).toContain('0.1.8')
+    expect(host.textContent).toContain('0.1.9')
+    expect(host.textContent).toContain('立即更新')
   })
 
   it('shows the global status bar instead of a sidebar summary', async () => {

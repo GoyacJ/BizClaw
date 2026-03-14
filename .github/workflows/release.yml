@@ -38,6 +38,9 @@ jobs:
   build-macos:
     needs: verify-version
     runs-on: macos-latest
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -74,12 +77,18 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: bizclaw-macos
-          path: src-tauri/target/release/bundle/dmg/*.dmg
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
           if-no-files-found: error
 
   build-windows:
     needs: verify-version
     runs-on: windows-latest
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -137,6 +146,7 @@ jobs:
           name: bizclaw-windows
           path: |
             src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/msi/*.msi.sig
             src-tauri/target/release/bundle/portable/*.zip
           if-no-files-found: error
 
@@ -146,6 +156,9 @@ jobs:
       - build-windows
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
       - name: Download release assets
         uses: actions/download-artifact@v7
         with:
@@ -162,6 +175,9 @@ jobs:
             --title "BizClaw ${GITHUB_REF_NAME}" \
             --notes "Automated BizClaw release for ${GITHUB_REF_NAME}."
 
+      - name: Generate updater manifest
+        run: node ./scripts/build-updater-manifest.mjs "${GITHUB_REF_NAME}" "${GITHUB_REPOSITORY}" release-artifacts release-artifacts/latest.json
+
       - name: Upload packaged assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -172,3 +188,10 @@ jobs:
             exit 1
           fi
           gh release upload "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" "${assets[@]}" --clobber
+
+      - name: Verify published updater assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --json assets > release-artifacts/release.json
+          node ./scripts/verify-updater-release.mjs release-artifacts/release.json

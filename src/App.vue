@@ -8,6 +8,13 @@ import type { ConnectionTestModalStep } from '@/types'
 const {
   activeSection,
   advancedOpen,
+  bizclawUpdate,
+  bizclawUpdateActionLabel,
+  bizclawUpdateBlockedReason,
+  bizclawUpdateDetail,
+  bizclawUpdatePrimaryAction,
+  bizclawUpdateTone,
+  checkBizClawUpdates,
   canSaveProfile,
   canStartHostedRuntime,
   canStopOperation,
@@ -20,9 +27,11 @@ const {
   connectionTestCloseDisabled,
   connectionTestDisabledReason,
   connectionTestModal,
+  deferBizClawRestart,
   environment,
   installBusyAction,
   installCli,
+  installBizClawUpdate,
   launchManualInstall,
   logs,
   manualInstallBusy,
@@ -42,6 +51,7 @@ const {
   runtimeStartBusy,
   runtimeStatus,
   runtimeStopBusy,
+  restartBizClaw,
   saveAndTest,
   saveBusy,
   saveOnly,
@@ -73,6 +83,22 @@ const logPreview = computed(() => [...logs.value].reverse().slice(0, 16))
 const gatewayConnected = computed(() => (
   runtimeStatus.value.phase === 'running' && runtimeStatus.value.gatewayConnected
 ))
+const bizclawPublishedLabel = computed(() => (
+  bizclawUpdate.value.publishedAt
+    ? new Date(bizclawUpdate.value.publishedAt).toLocaleDateString()
+    : '未检测'
+))
+const bizclawProgressLabel = computed(() => {
+  if (!bizclawUpdate.value.totalBytes && bizclawUpdate.value.downloadedBytes === 0) {
+    return ''
+  }
+
+  if (bizclawUpdate.value.totalBytes) {
+    return `下载进度：${bizclawUpdate.value.downloadedBytes} / ${bizclawUpdate.value.totalBytes} bytes`
+  }
+
+  return `已下载 ${bizclawUpdate.value.downloadedBytes} bytes`
+})
 
 const busyLabel = computed(() => {
   if (operationTask.value.phase === 'running' && operationTask.value.kind === 'install') {
@@ -86,6 +112,15 @@ const busyLabel = computed(() => {
   }
   if (installBusyAction.value === 'check-update') {
     return '检查更新中'
+  }
+  if (bizclawUpdate.value.phase === 'checking') {
+    return 'BizClaw 检查中'
+  }
+  if (bizclawUpdate.value.phase === 'downloading') {
+    return 'BizClaw 下载中'
+  }
+  if (bizclawUpdate.value.phase === 'installing') {
+    return 'BizClaw 安装中'
   }
   if (manualInstallBusy.value) {
     return '打开文档中'
@@ -194,6 +229,72 @@ function connectionStepLabel(status: ConnectionTestModalStep['status']) {
       </section>
 
       <section v-else-if="activeSection === 'install'" class="page-stack">
+        <article class="surface-card section-card">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">BizClaw App</p>
+              <h3>BizClaw 应用更新</h3>
+            </div>
+            <span class="status-chip" :data-tone="bizclawUpdateTone">{{ bizclawUpdateActionLabel }}</span>
+          </div>
+          <p class="supporting-text">{{ bizclawUpdateDetail }}</p>
+          <div class="support-grid">
+            <div class="support-tile">
+              <span>当前 BizClaw 版本</span>
+              <strong>{{ bizclawUpdate.currentVersion ?? '检测中' }}</strong>
+            </div>
+            <div class="support-tile">
+              <span>最新 BizClaw 版本</span>
+              <strong>{{ bizclawUpdate.latestVersion ?? '未检测' }}</strong>
+            </div>
+            <div class="support-tile">
+              <span>发布时间</span>
+              <strong>{{ bizclawPublishedLabel }}</strong>
+            </div>
+            <div class="support-tile">
+              <span>重启状态</span>
+              <strong>{{ bizclawUpdate.phase === 'readyToRestart' ? '待重启' : '无需重启' }}</strong>
+            </div>
+          </div>
+          <div class="button-row">
+            <button
+              class="secondary-button"
+              :disabled="bizclawUpdate.phase === 'checking' || bizclawUpdate.phase === 'downloading' || bizclawUpdate.phase === 'installing'"
+              @click="checkBizClawUpdates"
+            >
+              检查更新
+            </button>
+            <button
+              v-if="bizclawUpdate.phase !== 'readyToRestart'"
+              class="primary-button"
+              :disabled="bizclawUpdate.phase !== 'available' || !!bizclawUpdateBlockedReason"
+              @click="installBizClawUpdate"
+            >
+              {{ bizclawUpdatePrimaryAction }}
+            </button>
+            <template v-else>
+              <button class="primary-button" @click="restartBizClaw">
+                {{ bizclawUpdatePrimaryAction }}
+              </button>
+              <button class="secondary-button" @click="deferBizClawRestart">
+                稍后
+              </button>
+            </template>
+          </div>
+          <p v-if="bizclawUpdate.releaseNotes" class="helper-text">
+            发布说明：{{ bizclawUpdate.releaseNotes }}
+          </p>
+          <p v-if="bizclawProgressLabel" class="helper-text">
+            {{ bizclawProgressLabel }}
+          </p>
+          <p v-if="bizclawUpdateBlockedReason && bizclawUpdate.phase === 'available'" class="helper-text">
+            {{ bizclawUpdateBlockedReason }}
+          </p>
+          <p v-if="bizclawUpdate.errorMessage" class="error-banner">
+            {{ bizclawUpdate.errorMessage }}
+          </p>
+        </article>
+
         <article class="surface-card section-card">
           <div class="section-header">
             <div>

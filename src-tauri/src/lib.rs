@@ -16,6 +16,8 @@ pub fn run() {
     tauri::Builder::default()
         .manage(commands::AppState::default())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
                 let window_handle = window.clone();

@@ -6,8 +6,24 @@ function releaseDownloadUrl(repository, releaseTag, assetName) {
   return `https://github.com/${repository}/releases/download/${releaseTag}/${assetName}`
 }
 
+function listAssetPaths(assetsDirectory, currentDirectory = assetsDirectory) {
+  const assetPaths = []
+
+  for (const entry of readdirSync(currentDirectory, { withFileTypes: true })) {
+    const entryPath = resolve(currentDirectory, entry.name)
+    if (entry.isDirectory()) {
+      assetPaths.push(...listAssetPaths(assetsDirectory, entryPath))
+      continue
+    }
+
+    assetPaths.push(entryPath)
+  }
+
+  return assetPaths
+}
+
 function findAsset(assetsDirectory, pattern) {
-  return readdirSync(assetsDirectory).find((name) => pattern.test(name)) ?? null
+  return listAssetPaths(assetsDirectory).find((assetPath) => pattern.test(basename(assetPath))) ?? null
 }
 
 export function buildUpdaterManifest({
@@ -38,12 +54,12 @@ export function buildUpdaterManifest({
     pub_date: pubDate,
     platforms: {
       'darwin-aarch64': {
-        signature: readFileSync(resolve(resolvedAssetsDirectory, macSignature), 'utf8').trim(),
-        url: releaseDownloadUrl(repository, releaseTag, macArchive),
+        signature: readFileSync(macSignature, 'utf8').trim(),
+        url: releaseDownloadUrl(repository, releaseTag, basename(macArchive)),
       },
       'windows-x86_64': {
-        signature: readFileSync(resolve(resolvedAssetsDirectory, windowsSignature), 'utf8').trim(),
-        url: releaseDownloadUrl(repository, releaseTag, windowsInstaller),
+        signature: readFileSync(windowsSignature, 'utf8').trim(),
+        url: releaseDownloadUrl(repository, releaseTag, basename(windowsInstaller)),
       },
     },
   }

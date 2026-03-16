@@ -2,7 +2,7 @@ use std::{
     env,
     io::{BufRead, BufReader},
     net::{SocketAddr, TcpStream},
-    process::{Child, Command, Stdio},
+    process::{Child, Stdio},
     sync::mpsc,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -31,6 +31,7 @@ use crate::{
         push_event, request_stop, snapshot_events, snapshot_task, start_task, update_step,
         with_child_mut, SharedOperationState,
     },
+    process_exec::new_command,
     runtime::{
         build_native_gateway_status_command, build_native_ssh_command,
         build_wsl_gateway_status_command, build_wsl_ssh_command, CommandSpec,
@@ -1021,7 +1022,27 @@ fn run_connection_test(
                 CONNECTION_TEST_TIMEOUT_MS,
             ),
             locale,
-        )?;
+        )
+        .map_err(|error| {
+            emit_connection_test_event(
+                app,
+                ConnectionTestStep::GatewayProbe,
+                ConnectionTestEventStatus::Error,
+                error.to_string(),
+            );
+            error
+        });
+
+        let gateway_result = match gateway_result {
+            Ok(result) => result,
+            Err(error) => {
+                return Ok(gateway_probe_failure_result(
+                    locale,
+                    String::new(),
+                    error.to_string(),
+                ));
+            }
+        };
 
         if gateway_result.success {
             emit_connection_test_event(
@@ -1055,18 +1076,11 @@ fn run_connection_test(
                 )
                 .to_string(),
             );
-            Ok(ConnectionTestResult {
-                success: false,
-                step: ConnectionTestStep::GatewayProbe,
-                summary: locale_text(
-                    locale,
-                    "Gateway 鉴权失败，请检查 Token、SSH 转发和远程 Gateway 状态。",
-                    "Gateway authentication failed. Check the token, SSH forwarding, and remote Gateway status.",
-                )
-                .into(),
-                stdout: gateway_result.stdout,
-                stderr: gateway_result.stderr,
-            })
+            Ok(gateway_probe_failure_result(
+                locale,
+                gateway_result.stdout,
+                gateway_result.stderr,
+            ))
         }
     })();
 
@@ -1094,6 +1108,25 @@ fn run_connection_test(
                 stderr: error.to_string(),
             })
         }
+    }
+}
+
+fn gateway_probe_failure_result(
+    locale: LocalePreference,
+    stdout: String,
+    stderr: String,
+) -> ConnectionTestResult {
+    ConnectionTestResult {
+        success: false,
+        step: ConnectionTestStep::GatewayProbe,
+        summary: locale_text(
+            locale,
+            "Gateway 鉴权失败，请检查 Token、SSH 转发和远程 Gateway 状态。",
+            "Gateway authentication failed. Check the token, SSH forwarding, and remote Gateway status.",
+        )
+        .into(),
+        stdout,
+        stderr,
     }
 }
 
@@ -1146,8 +1179,7 @@ fn build_gateway_status_command(
 }
 
 fn spawn_command_spec(spec: &CommandSpec, locale: LocalePreference) -> Result<Child> {
-    let mut command = Command::new(&spec.program);
-    command.args(&spec.args);
+    let mut command = new_command(&spec.program, &spec.args);
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     for (key, value) in &spec.envs {
@@ -1163,8 +1195,7 @@ fn spawn_command_spec(spec: &CommandSpec, locale: LocalePreference) -> Result<Ch
 }
 
 fn run_command_capture(spec: &CommandSpec, locale: LocalePreference) -> Result<CapturedOutput> {
-    let output = Command::new(&spec.program)
-        .args(&spec.args)
+    let output = new_command(&spec.program, &spec.args)
         .envs(spec.envs.iter().cloned())
         .stdin(Stdio::null())
         .output()
@@ -2208,8 +2239,7 @@ fn execute_plan_streaming(
         ),
     );
 
-    let mut command = Command::new(&plan.program);
-    command.args(&plan.args);
+    let mut command = new_command(&plan.program, &plan.args);
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     for (key, value) in &plan.envs {
@@ -2409,7 +2439,8 @@ mod tests {
 
     use super::{
         apply_ui_preferences_to_snapshot, build_environment_snapshot, cancelled_follow_up,
-        inspect_token_state, load_saved_token, persist_profile_atomic,
+        gateway_probe_failure_result, inspect_token_state, load_saved_token,
+        persist_profile_atomic,
         should_treat_plan_as_success, update_available_from_versions,
         window_background_color_for_theme, window_theme_for_preference,
         with_cached_latest_openclaw_version, ResolvedEnvironment, RuntimePhase, RuntimeStatus,
@@ -2418,8 +2449,9 @@ mod tests {
     use crate::{
         secret_store::{MemorySecretStore, SecretStore},
         types::{
-            CompanyProfile, LocalePreference, OperationKind, PersistedSettings, RuntimeTarget,
-            TargetProfile, TokenStatus, UiPreferences, UserProfile, WslStatus,
+            CompanyProfile, ConnectionTestStep, LocalePreference, OperationKind,
+            PersistedSettings, RuntimeTarget, TargetProfile, TokenStatus, UiPreferences,
+            UserProfile, WslStatus,
         },
     };
 
@@ -2567,6 +2599,20 @@ mod tests {
         assert_eq!(snapshot.runtime_target, RuntimeTarget::WindowsNative);
         assert_eq!(snapshot.wsl_status, None);
         assert_eq!(snapshot.runtime_status.phase, RuntimePhase::Configured);
+    }
+
+    #[test]
+    fn gateway_probe_failure_result_uses_gateway_step_and_summary() {
+        let result = gateway_probe_failure_result(
+            LocalePreference::ZhCn,
+            String::new(),
+            "执行命令失败： openclaw".into(),
+        );
+
+        assert!(!result.success);
+        assert_eq!(result.step, ConnectionTestStep::GatewayProbe);
+        assert_eq!(result.stderr, "执行命令失败： openclaw");
+        assert!(result.summary.contains("Gateway 鉴权失败"));
     }
 
     #[test]

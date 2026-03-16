@@ -2,7 +2,10 @@ use std::{env, process::Command};
 
 use anyhow::{anyhow, Result};
 
-use crate::types::{RuntimeTarget, TargetProfile, WslStatus};
+use crate::{
+    process_exec::new_command,
+    types::{RuntimeTarget, TargetProfile, WslStatus},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
@@ -262,7 +265,7 @@ pub fn read_openclaw_version(
 ) -> Option<String> {
     read_first_non_empty_line(match target {
         RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => {
-            Command::new("openclaw").arg("--version").output().ok()?
+            new_command("openclaw", &["--version".into()]).output().ok()?
         }
         RuntimeTarget::WindowsWsl => run_wsl_command(target_profile, "openclaw --version").ok()?,
     })
@@ -276,8 +279,10 @@ pub fn read_latest_openclaw_version(
         RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => {
             if command_available("npm") {
                 return read_first_non_empty_line(
-                    Command::new("npm")
-                        .args(["view", "openclaw", "version"])
+                    new_command(
+                        "npm",
+                        &["view".into(), "openclaw".into(), "version".into()],
+                    )
                         .output()
                         .ok()?,
                 );
@@ -285,8 +290,10 @@ pub fn read_latest_openclaw_version(
 
             if command_available("pnpm") {
                 return read_first_non_empty_line(
-                    Command::new("pnpm")
-                        .args(["view", "openclaw", "version"])
+                    new_command(
+                        "pnpm",
+                        &["view".into(), "openclaw".into(), "version".into()],
+                    )
                         .output()
                         .ok()?,
                 );

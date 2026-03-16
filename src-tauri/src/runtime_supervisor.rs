@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     io::{BufRead, BufReader},
     net::{SocketAddr, TcpStream},
-    process::{Child, Command, Stdio},
+    process::{Child, Stdio},
     sync::{Arc, Mutex},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -13,6 +13,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::{
     app_menu,
+    process_exec::new_command,
     runtime::{
         build_native_openclaw_command, build_native_ssh_command, build_wsl_openclaw_command,
         build_wsl_ssh_command, CommandSpec,
@@ -310,8 +311,7 @@ pub fn stop_runtime_processes(
 }
 
 fn spawn_command(spec: &CommandSpec, locale: LocalePreference) -> Result<Child> {
-    let mut command = Command::new(&spec.program);
-    command.args(&spec.args);
+    let mut command = new_command(&spec.program, &spec.args);
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     for (key, value) in &spec.envs {

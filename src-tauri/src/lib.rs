@@ -5,6 +5,7 @@ pub mod commands;
 pub mod config_store;
 pub mod install;
 pub mod operation_supervisor;
+pub mod process_exec;
 pub mod runtime;
 pub mod runtime_state;
 pub mod runtime_supervisor;

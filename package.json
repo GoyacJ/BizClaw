@@ -1,7 +1,7 @@
 {
   "name": "bizclaw",
   "private": true,
-  "version": "0.1.16",
+  "version": "0.1.17",
   "type": "module",
   "packageManager": "pnpm@10.11.0",
   "scripts": {
@@ -12,9 +12,9 @@
     "check:release-version": "node ./scripts/verify-release-version.mjs",
     "test": "pnpm test:web && pnpm test:rust",
     "test:web": "vitest run",
-    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
+    "test:rust": "node ./scripts/run-rust-command.mjs cargo test --manifest-path src-tauri/Cargo.toml",
+    "tauri:dev": "node ./scripts/run-rust-command.mjs tauri dev",
+    "tauri:build": "node ./scripts/run-rust-command.mjs tauri build",
     "bundle:mac-dmg": "node ./scripts/build-macos-dmg.mjs"
   },
   "dependencies": {

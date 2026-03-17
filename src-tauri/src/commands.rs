@@ -13,6 +13,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
+use serde_json::Value;
 use tauri::{window::Color, AppHandle, Emitter, Manager, State, Theme};
 use tauri_plugin_opener::OpenerExt;
 
@@ -1093,7 +1094,9 @@ fn run_connection_test(
             }
         };
 
-        if gateway_result.success {
+        let gateway_probe = evaluate_gateway_probe(&gateway_result);
+
+        if gateway_probe.success {
             emit_connection_test_event(
                 app,
                 ConnectionTestStep::GatewayProbe,
@@ -1114,21 +1117,18 @@ fn run_connection_test(
                 stderr: gateway_result.stderr,
             })
         } else {
+            let error_message = gateway_probe_error_message(locale, gateway_probe.reason.as_deref());
             emit_connection_test_event(
                 app,
                 ConnectionTestStep::GatewayProbe,
                 ConnectionTestEventStatus::Error,
-                locale_text(
-                    locale,
-                    "Gateway 鉴权失败，请检查 Token、SSH 转发和远程 Gateway 状态。",
-                    "Gateway authentication failed. Check the token, SSH forwarding, and remote Gateway status.",
-                )
-                .to_string(),
+                error_message,
             );
-            Ok(gateway_probe_failure_result(
+            Ok(gateway_probe_failure_result_with_reason(
                 locale,
                 gateway_result.stdout,
                 gateway_result.stderr,
+                gateway_probe.reason,
             ))
         }
     })();
@@ -1165,18 +1165,116 @@ fn gateway_probe_failure_result(
     stdout: String,
     stderr: String,
 ) -> ConnectionTestResult {
+    gateway_probe_failure_result_with_reason(locale, stdout, stderr, None)
+}
+
+fn gateway_probe_failure_result_with_reason(
+    locale: LocalePreference,
+    stdout: String,
+    stderr: String,
+    reason: Option<String>,
+) -> ConnectionTestResult {
     ConnectionTestResult {
         success: false,
         step: ConnectionTestStep::GatewayProbe,
-        summary: locale_text(
-            locale,
-            "Gateway 鉴权失败，请检查 Token、SSH 转发和远程 Gateway 状态。",
-            "Gateway authentication failed. Check the token, SSH forwarding, and remote Gateway status.",
-        )
-        .into(),
+        summary: gateway_probe_error_message(locale, reason.as_deref()),
         stdout,
         stderr,
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GatewayProbeEvaluation {
+    success: bool,
+    reason: Option<String>,
+}
+
+fn evaluate_gateway_probe(result: &CapturedOutput) -> GatewayProbeEvaluation {
+    if !result.success {
+        return GatewayProbeEvaluation {
+            success: false,
+            reason: detect_gateway_probe_reason(&result.stdout, &result.stderr),
+        };
+    }
+
+    let Some(parsed) = parse_gateway_status_output(&result.stdout) else {
+        return GatewayProbeEvaluation {
+            success: true,
+            reason: None,
+        };
+    };
+
+    let auth_ok = parsed
+        .get("auth")
+        .and_then(|auth| auth.get("ok"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let rpc_ok = parsed
+        .get("rpc")
+        .and_then(|rpc| rpc.get("ok"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+
+    if auth_ok && rpc_ok {
+        GatewayProbeEvaluation {
+            success: true,
+            reason: None,
+        }
+    } else {
+        let reason = parsed
+            .get("rpc")
+            .and_then(|rpc| rpc.get("error"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                parsed
+                    .get("auth")
+                    .and_then(|auth| auth.get("error"))
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+            .or_else(|| detect_gateway_probe_reason(&result.stdout, &result.stderr));
+
+        GatewayProbeEvaluation {
+            success: false,
+            reason,
+        }
+    }
+}
+
+fn parse_gateway_status_output(stdout: &str) -> Option<Value> {
+    serde_json::from_str(stdout).ok()
+}
+
+fn detect_gateway_probe_reason(stdout: &str, stderr: &str) -> Option<String> {
+    let combined = [stdout, stderr]
+        .into_iter()
+        .filter(|value| !value.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let trimmed = combined.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    Some(trimmed.to_string())
+}
+
+fn gateway_probe_error_message(locale: LocalePreference, reason: Option<&str>) -> String {
+    let reason = reason.unwrap_or_default().to_ascii_lowercase();
+    if reason.contains("pairing required") {
+        return locale_owned(
+            locale,
+            "Gateway 需要先完成 pairing。当前 Token 和 SSH 隧道已经通了，但远端 Gateway 还没有完成配对，请先在 Gateway 侧完成 pairing 后再重试。",
+            "The Gateway requires pairing first. The token and SSH tunnel are working, but the remote Gateway has not been paired yet. Complete pairing on the Gateway side and try again.",
+        );
+    }
+
+    locale_owned(
+        locale,
+        "Gateway 鉴权失败，请检查 Token、SSH 转发和远程 Gateway 状态。",
+        "Gateway authentication failed. Check the token, SSH forwarding, and remote Gateway status.",
+    )
 }
 
 fn build_runtime_ssh_command(
@@ -2499,11 +2597,12 @@ mod tests {
 
     use super::{
         apply_ui_preferences_to_snapshot, build_environment_snapshot, cancelled_follow_up,
-        gateway_probe_failure_result, inspect_token_state, load_saved_token,
+        evaluate_gateway_probe, gateway_probe_failure_result,
+        gateway_probe_failure_result_with_reason, inspect_token_state, load_saved_token,
         persist_profile_atomic, should_treat_plan_as_success, update_available_from_versions,
         window_background_color_for_theme, window_theme_for_preference,
-        with_cached_latest_openclaw_version, ResolvedEnvironment, RuntimePhase, RuntimeStatus,
-        SettingsStoreAccess, TokenState,
+        with_cached_latest_openclaw_version, CapturedOutput, ResolvedEnvironment, RuntimePhase,
+        RuntimeStatus, SettingsStoreAccess, TokenState,
     };
     use crate::{
         secret_store::{MemorySecretStore, SecretStore},
@@ -2677,6 +2776,34 @@ mod tests {
         assert_eq!(result.step, ConnectionTestStep::GatewayProbe);
         assert_eq!(result.stderr, "执行命令失败： openclaw");
         assert!(result.summary.contains("Gateway 鉴权失败"));
+    }
+
+    #[test]
+    fn gateway_probe_failure_result_surfaces_pairing_required_message() {
+        let result = gateway_probe_failure_result_with_reason(
+            LocalePreference::EnUs,
+            String::new(),
+            "gateway connect failed".into(),
+            Some("pairing required".into()),
+        );
+
+        assert!(!result.success);
+        assert!(result.summary.contains("requires pairing"));
+    }
+
+    #[test]
+    fn evaluate_gateway_probe_treats_rpc_failure_as_connection_failure() {
+        let evaluation = evaluate_gateway_probe(&CapturedOutput {
+            success: true,
+            stdout: r#"{"auth":{"ok":true},"rpc":{"ok":false,"error":"gateway closed (1008): pairing required"}}"#.into(),
+            stderr: "gateway connect failed: GatewayClientRequestError: pairing required".into(),
+        });
+
+        assert!(!evaluation.success);
+        assert_eq!(
+            evaluation.reason.as_deref(),
+            Some("gateway closed (1008): pairing required")
+        );
     }
 
     #[test]

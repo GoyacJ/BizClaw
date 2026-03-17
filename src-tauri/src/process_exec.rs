@@ -32,14 +32,10 @@ pub fn prepare_command(
         .map(|value| value.to_ascii_lowercase());
 
     if matches!(extension.as_deref(), Some("cmd" | "bat")) {
-        let mut command_line = vec![
-            "call".to_string(),
-            force_quote_for_windows_cmd(&display_program(&resolved_path, program)),
-        ];
-        command_line.extend(args.iter().map(|value| quote_for_windows_cmd(value)));
+        let _ = comspec;
         return PreparedCommand {
-            program: comspec.unwrap_or("cmd.exe").to_string(),
-            args: vec!["/d".into(), "/c".into(), command_line.join(" ")],
+            program: display_program(&resolved_path, program),
+            args: args.to_vec(),
         };
     }
 
@@ -72,22 +68,6 @@ fn display_program(path: &Path, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
-fn quote_for_windows_cmd(value: &str) -> String {
-    if value.is_empty()
-        || value
-            .chars()
-            .any(|ch| ch.is_whitespace() || matches!(ch, '"' | '&' | '|' | '<' | '>' | '^'))
-    {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_string()
-    }
-}
-
-fn force_quote_for_windows_cmd(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -95,7 +75,7 @@ mod tests {
     use super::{prepare_command, PreparedCommand};
 
     #[test]
-    fn windows_batch_wrappers_run_via_cmd_exe() {
+    fn windows_batch_wrappers_spawn_directly() {
         let prepared = prepare_command(
             "openclaw",
             &["gateway".into(), "status".into(), "--json".into()],
@@ -109,12 +89,8 @@ mod tests {
         assert_eq!(
             prepared,
             PreparedCommand {
-                program: r"C:\Windows\System32\cmd.exe".into(),
-                args: vec![
-                    "/d".into(),
-                    "/c".into(),
-                    "call \"C:\\Users\\goya\\AppData\\Roaming\\npm\\openclaw.cmd\" gateway status --json".into(),
-                ],
+                program: r"C:\Users\goya\AppData\Roaming\npm\openclaw.cmd".into(),
+                args: vec!["gateway".into(), "status".into(), "--json".into()],
             }
         );
     }

@@ -217,7 +217,7 @@ export function startRuntimeDisabledReason(
   }
 
   if (!snapshot) {
-    return translate('runtime.startDisabled.checking')
+    return null
   }
 
   if (snapshot.runtimeTarget === 'windowsWsl' && !snapshot.wslStatus?.ready) {

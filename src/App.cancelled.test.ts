@@ -14,11 +14,13 @@ vi.mock('@/lib/use-app-model', () => {
     os: 'macos',
     runtimeTarget: 'macNative',
     hostSshInstalled: true,
+    hostOpenclawInstalled: true,
     targetSshInstalled: true,
     openclawInstalled: true,
     openclawVersion: 'OpenClaw 2026.3.8',
     latestOpenclawVersion: '2026.3.9',
     updateAvailable: true,
+    wslOpenclawInstalled: false,
     hasSavedProfile: true,
     tokenStatus: 'saved',
     tokenStatusMessage: null,
@@ -81,9 +83,11 @@ vi.mock('@/lib/use-app-model', () => {
       canSaveProfile: ref(true),
       canStartHostedRuntime: ref(false),
       canTestConnection: ref(false),
+      chooseWindowsInstallTarget: vi.fn(),
       checkForUpdates: vi.fn(),
       closeConnectionTestModal: vi.fn(),
       closeInstallRemediationModal: vi.fn(),
+      closeWindowsInstallChoiceModal: vi.fn(),
       companyProfile: reactive({
         sshHost: 'gateway.example.com',
         sshUser: 'bizclaw',
@@ -194,6 +198,7 @@ vi.mock('@/lib/use-app-model', () => {
         autoConnect: true,
         runInBackground: true,
       }),
+      windowsInstallChoiceModalOpen: ref(false),
     }),
   }
 })

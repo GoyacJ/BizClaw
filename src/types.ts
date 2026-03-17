@@ -9,6 +9,7 @@ export type RuntimePhase =
   | 'error'
 
 export type RuntimeTarget = 'macNative' | 'windowsNative' | 'windowsWsl'
+export type WindowsInstallTarget = Extract<RuntimeTarget, 'windowsNative' | 'windowsWsl'>
 
 export type ThemePreference = 'light' | 'dark' | 'system'
 export type LocalePreference = 'zh-CN' | 'en-US'
@@ -63,11 +64,13 @@ export interface EnvironmentSnapshot {
   os: string
   runtimeTarget: RuntimeTarget
   hostSshInstalled: boolean
+  hostOpenclawInstalled: boolean
   targetSshInstalled: boolean
   openclawInstalled: boolean
   openclawVersion: string | null
   latestOpenclawVersion: string | null
   updateAvailable: boolean
+  wslOpenclawInstalled: boolean
   hasSavedProfile: boolean
   tokenStatus: 'saved' | 'missing' | 'error'
   tokenStatusMessage: string | null
@@ -102,6 +105,7 @@ export interface BizClawUpdateState {
 export interface InstallRequest {
   preferOfficial: boolean
   allowElevation: boolean
+  windowsTarget?: WindowsInstallTarget | null
 }
 
 export type SupportUrlTarget = 'openclawManual' | 'homebrewInstall'

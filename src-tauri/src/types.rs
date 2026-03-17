@@ -130,11 +130,15 @@ pub struct EnvironmentSnapshot {
     pub os: String,
     pub runtime_target: RuntimeTarget,
     pub host_ssh_installed: bool,
+    #[serde(default)]
+    pub host_openclaw_installed: bool,
     pub target_ssh_installed: bool,
     pub openclaw_installed: bool,
     pub openclaw_version: Option<String>,
     pub latest_openclaw_version: Option<String>,
     pub update_available: bool,
+    #[serde(default)]
+    pub wsl_openclaw_installed: bool,
     pub has_saved_profile: bool,
     pub token_status: TokenStatus,
     pub token_status_message: Option<String>,
@@ -159,6 +163,8 @@ pub enum TokenStatus {
 pub struct InstallRequest {
     pub prefer_official: bool,
     pub allow_elevation: bool,
+    #[serde(default)]
+    pub windows_target: Option<RuntimeTarget>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

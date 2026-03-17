@@ -32,19 +32,14 @@ pub fn prepare_command(
         .map(|value| value.to_ascii_lowercase());
 
     if matches!(extension.as_deref(), Some("cmd" | "bat")) {
-        let mut command_line = vec![force_quote_for_windows_cmd(&display_program(
-            &resolved_path,
-            program,
-        ))];
+        let mut command_line = vec![
+            "call".to_string(),
+            force_quote_for_windows_cmd(&display_program(&resolved_path, program)),
+        ];
         command_line.extend(args.iter().map(|value| quote_for_windows_cmd(value)));
         return PreparedCommand {
             program: comspec.unwrap_or("cmd.exe").to_string(),
-            args: vec![
-                "/d".into(),
-                "/s".into(),
-                "/c".into(),
-                command_line.join(" "),
-            ],
+            args: vec!["/d".into(), "/c".into(), command_line.join(" ")],
         };
     }
 
@@ -117,10 +112,8 @@ mod tests {
                 program: r"C:\Windows\System32\cmd.exe".into(),
                 args: vec![
                     "/d".into(),
-                    "/s".into(),
                     "/c".into(),
-                    "\"C:\\Users\\goya\\AppData\\Roaming\\npm\\openclaw.cmd\" gateway status --json"
-                        .into(),
+                    "call \"C:\\Users\\goya\\AppData\\Roaming\\npm\\openclaw.cmd\" gateway status --json".into(),
                 ],
             }
         );

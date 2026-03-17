@@ -148,6 +148,10 @@ describe('runtime view helpers', () => {
 
     expect(startRuntimeDisabledReason(snapshot, false)).toBe('请先补齐目标运行环境中的 OpenSSH。')
   })
+
+  it('does not block runtime start while environment detection is still pending', () => {
+    expect(startRuntimeDisabledReason(null, false)).toBeNull()
+  })
 })
 
 function createSnapshot(
@@ -157,11 +161,13 @@ function createSnapshot(
     os: 'macos',
     runtimeTarget: 'macNative',
     hostSshInstalled: true,
+    hostOpenclawInstalled: false,
     targetSshInstalled: true,
     openclawInstalled: false,
     openclawVersion: null,
     latestOpenclawVersion: null,
     updateAvailable: false,
+    wslOpenclawInstalled: false,
     hasSavedProfile: false,
     tokenStatus: 'missing',
     tokenStatusMessage: null,

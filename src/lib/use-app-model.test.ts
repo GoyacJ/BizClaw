@@ -11,6 +11,7 @@ const apiMocks = vi.hoisted(() => ({
   getOperationStatus: vi.fn(),
   getOperationEvents: vi.fn(),
   installOpenClaw: vi.fn(),
+  openManualInstall: vi.fn(),
   onRuntimeLog: vi.fn(),
   onRuntimeStatus: vi.fn(),
   onOperationStatus: vi.fn(),
@@ -20,7 +21,10 @@ const apiMocks = vi.hoisted(() => ({
   openSupportUrl: vi.fn(),
   saveProfile: vi.fn(),
   saveUiPreferences: vi.fn(),
+  startRuntime: vi.fn(),
   stopOpenClawOperation: vi.fn(),
+  stopRuntime: vi.fn(),
+  testConnection: vi.fn(),
   updateOpenClaw: vi.fn(),
 }))
 
@@ -45,15 +49,15 @@ vi.mock('@/lib/api', () => ({
   onRefreshRequested: apiMocks.onRefreshRequested,
   onRuntimeLog: apiMocks.onRuntimeLog,
   onRuntimeStatus: apiMocks.onRuntimeStatus,
-  openManualInstall: vi.fn(),
+  openManualInstall: apiMocks.openManualInstall,
   openSupportUrl: apiMocks.openSupportUrl,
   saveProfile: apiMocks.saveProfile,
   saveUiPreferences: apiMocks.saveUiPreferences,
-  startRuntime: vi.fn(),
+  startRuntime: apiMocks.startRuntime,
   stopOpenClawOperation: apiMocks.stopOpenClawOperation,
-  stopRuntime: vi.fn(),
+  stopRuntime: apiMocks.stopRuntime,
   streamLogs: apiMocks.streamLogs,
-  testConnection: vi.fn(),
+  testConnection: apiMocks.testConnection,
   updateOpenClaw: apiMocks.updateOpenClaw,
 }))
 
@@ -185,6 +189,90 @@ describe('useAppModel', () => {
     expect(model.bizclawUpdate.value.phase).toBe('idle')
     expect(model.bizclawUpdate.value.currentVersion).toBe('0.1.8')
     expect(model.bizclawUpdateActionLabel.value).toBe('已加载当前版本')
+  })
+
+  it('keeps save-and-test available while environment detection is still pending', async () => {
+    apiMocks.detectEnvironment.mockReturnValue(new Promise(() => {}))
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await nextTick()
+
+    Object.assign(model.companyProfile, {
+      companyName: 'OpenClaw',
+      sshHost: 'gateway.example.com',
+      sshPort: '22',
+      sshUser: 'root',
+      remoteBindHost: '127.0.0.1',
+      remoteBindPort: '8080',
+      localPort: '18080',
+    })
+    model.userProfile.displayName = 'Tester'
+    model.tokenInput.value = 'token'
+
+    expect(model.canSaveProfile.value).toBe(true)
+    expect(model.connectionTestDisabledReason.value).toBeNull()
+    expect(model.canTestConnection.value).toBe(true)
+  })
+
+  it('starts the hosted runtime without waiting for a pending environment refresh', async () => {
+    apiMocks.detectEnvironment.mockReturnValue(new Promise(() => {}))
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.startRuntime.mockResolvedValue({
+      phase: 'connecting',
+      sshConnected: false,
+      nodeConnected: false,
+      gatewayConnected: false,
+      lastError: null,
+    })
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await nextTick()
+    await model.startHostedRuntime()
+
+    expect(apiMocks.startRuntime).toHaveBeenCalledTimes(1)
   })
 
   it('hydrates ui preferences from the environment and persists locale changes', async () => {
@@ -697,6 +785,67 @@ describe('useAppModel', () => {
     expect(model.operationTask.value.phase).toBe('success')
   })
 
+  it('opens a Windows install choice modal when neither local nor WSL OpenClaw is installed', async () => {
+    apiMocks.detectEnvironment.mockResolvedValue(createSnapshot({
+      os: 'windows',
+      runtimeTarget: 'windowsWsl',
+      openclawInstalled: false,
+      openclawVersion: null,
+      latestOpenclawVersion: null,
+      updateAvailable: false,
+      hostOpenclawInstalled: false,
+      wslOpenclawInstalled: false,
+      wslStatus: {
+        available: false,
+        distroName: 'Ubuntu',
+        distroInstalled: false,
+        ready: false,
+        needsReboot: false,
+        message: '未检测到 WSL，可通过自动安装继续。',
+      },
+    }))
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+    await model.installCli()
+    await flushPromises()
+
+    expect(model.windowsInstallChoiceModalOpen.value).toBe(true)
+    expect(apiMocks.installOpenClaw).not.toHaveBeenCalled()
+
+    await model.chooseWindowsInstallTarget('windowsNative')
+    await flushPromises()
+
+    expect(apiMocks.installOpenClaw).toHaveBeenCalledWith({
+      preferOfficial: true,
+      allowElevation: false,
+      windowsTarget: 'windowsNative',
+    })
+    expect(model.windowsInstallChoiceModalOpen.value).toBe(false)
+  })
+
   it('guides Homebrew installation and retries the update after the user asks to continue', async () => {
     apiMocks.detectEnvironment
       .mockResolvedValueOnce(createSnapshot({
@@ -864,11 +1013,13 @@ function createSnapshot(overrides: Partial<EnvironmentSnapshot> = {}): Environme
     os: 'macos',
     runtimeTarget: 'macNative',
     hostSshInstalled: true,
+    hostOpenclawInstalled: true,
     targetSshInstalled: true,
     openclawInstalled: true,
     openclawVersion: 'OpenClaw 2026.3.8',
     latestOpenclawVersion: '2026.3.9',
     updateAvailable: true,
+    wslOpenclawInstalled: false,
     hasSavedProfile: true,
     tokenStatus: 'saved',
     tokenStatusMessage: null,

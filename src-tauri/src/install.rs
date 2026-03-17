@@ -38,18 +38,26 @@ pub fn default_install_target(platform: Platform) -> RuntimeTarget {
     }
 }
 
-pub fn preferred_windows_runtime_target(host_openclaw_installed: bool) -> RuntimeTarget {
+pub fn preferred_windows_runtime_target(
+    host_openclaw_installed: bool,
+    wsl_openclaw_installed: bool,
+) -> RuntimeTarget {
     if host_openclaw_installed {
         RuntimeTarget::WindowsNative
+    } else if wsl_openclaw_installed {
+        RuntimeTarget::WindowsWsl
     } else {
         RuntimeTarget::WindowsWsl
     }
 }
 
-pub fn resolve_runtime_target(platform: Platform, _target_profile: &TargetProfile) -> RuntimeTarget {
+pub fn resolve_runtime_target(platform: Platform, target_profile: &TargetProfile) -> RuntimeTarget {
     match platform {
         Platform::MacOs => RuntimeTarget::MacNative,
-        Platform::Windows => preferred_windows_runtime_target(command_available("openclaw")),
+        Platform::Windows => preferred_windows_runtime_target(
+            command_available("openclaw"),
+            target_command_available(RuntimeTarget::WindowsWsl, target_profile, "openclaw"),
+        ),
     }
 }
 
@@ -92,13 +100,28 @@ pub fn official_install_plan(platform: Platform) -> InstallPlan {
     }
 }
 
+pub fn windows_native_official_install_plan() -> InstallPlan {
+    InstallPlan {
+        strategy: "official",
+        program: "powershell".into(),
+        args: vec![
+            "-NoProfile".into(),
+            "-ExecutionPolicy".into(),
+            "Bypass".into(),
+            "-Command".into(),
+            "iwr -useb https://openclaw.ai/install.ps1 | iex".into(),
+        ],
+        envs: Vec::new(),
+    }
+}
+
 pub fn official_install_plan_for_target(
     target: RuntimeTarget,
     target_profile: &TargetProfile,
 ) -> Option<InstallPlan> {
     match target {
         RuntimeTarget::MacNative => Some(official_install_plan(Platform::MacOs)),
-        RuntimeTarget::WindowsNative => None,
+        RuntimeTarget::WindowsNative => Some(windows_native_official_install_plan()),
         RuntimeTarget::WindowsWsl => Some(wsl_openclaw_install_plan(target_profile)),
     }
 }
@@ -112,10 +135,7 @@ pub fn install_plans_for_target(
 ) -> Vec<InstallPlan> {
     let mut plans = Vec::new();
     if prefer_official {
-        if let Some(plan) = official_install_plan_for_target(
-            target.clone(),
-            target_profile,
-        ) {
+        if let Some(plan) = official_install_plan_for_target(target.clone(), target_profile) {
             plans.push(plan);
         }
     }
@@ -135,6 +155,10 @@ pub fn update_plans_for_target(
     has_npm: bool,
     has_pnpm: bool,
 ) -> Vec<InstallPlan> {
+    if matches!(target, RuntimeTarget::WindowsNative) {
+        return fallback_install_plans_for_target(target, target_profile, has_npm, has_pnpm);
+    }
+
     install_plans_for_target(target, target_profile, prefer_official, has_npm, has_pnpm)
 }
 
@@ -265,7 +289,9 @@ pub fn read_openclaw_version(
 ) -> Option<String> {
     read_first_non_empty_line(match target {
         RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => {
-            new_command("openclaw", &["--version".into()]).output().ok()?
+            new_command("openclaw", &["--version".into()])
+                .output()
+                .ok()?
         }
         RuntimeTarget::WindowsWsl => run_wsl_command(target_profile, "openclaw --version").ok()?,
     })
@@ -279,10 +305,7 @@ pub fn read_latest_openclaw_version(
         RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => {
             if command_available("npm") {
                 return read_first_non_empty_line(
-                    new_command(
-                        "npm",
-                        &["view".into(), "openclaw".into(), "version".into()],
-                    )
+                    new_command("npm", &["view".into(), "openclaw".into(), "version".into()])
                         .output()
                         .ok()?,
                 );
@@ -294,8 +317,8 @@ pub fn read_latest_openclaw_version(
                         "pnpm",
                         &["view".into(), "openclaw".into(), "version".into()],
                     )
-                        .output()
-                        .ok()?,
+                    .output()
+                    .ok()?,
                 );
             }
 
@@ -486,9 +509,9 @@ fn sh_quote(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        compare_versions, default_install_target, fallback_install_plans,
-        install_plans_for_target, looks_like_permission_error, macos_ensure_ssh_plan,
-        official_install_plan, preferred_windows_runtime_target, update_plans_for_target, Platform,
+        compare_versions, default_install_target, fallback_install_plans, install_plans_for_target,
+        looks_like_permission_error, macos_ensure_ssh_plan, official_install_plan,
+        preferred_windows_runtime_target, update_plans_for_target, Platform,
     };
     use crate::types::{RuntimeTarget, TargetProfile};
 
@@ -536,6 +559,20 @@ mod tests {
     fn install_plans_keep_official_installer_first() {
         let plans = install_plans_for_target(
             RuntimeTarget::MacNative,
+            &TargetProfile::default(),
+            true,
+            true,
+            true,
+        );
+        let strategies = plans.iter().map(|plan| plan.strategy).collect::<Vec<_>>();
+
+        assert_eq!(strategies, vec!["official", "npm", "pnpm"]);
+    }
+
+    #[test]
+    fn windows_native_install_prefers_official_installer_before_package_managers() {
+        let plans = install_plans_for_target(
+            RuntimeTarget::WindowsNative,
             &TargetProfile::default(),
             true,
             true,
@@ -595,11 +632,15 @@ mod tests {
     #[test]
     fn prefers_windows_native_target_when_host_openclaw_exists() {
         assert_eq!(
-            preferred_windows_runtime_target(true),
+            preferred_windows_runtime_target(true, true),
             RuntimeTarget::WindowsNative
         );
         assert_eq!(
-            preferred_windows_runtime_target(false),
+            preferred_windows_runtime_target(false, true),
+            RuntimeTarget::WindowsWsl
+        );
+        assert_eq!(
+            preferred_windows_runtime_target(false, false),
             RuntimeTarget::WindowsWsl
         );
     }

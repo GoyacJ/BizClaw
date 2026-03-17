@@ -104,7 +104,9 @@ struct TokenState {
 struct ResolvedEnvironment {
     runtime_target: RuntimeTarget,
     host_ssh_installed: bool,
+    host_openclaw_installed: bool,
     target_ssh_installed: bool,
+    wsl_openclaw_installed: bool,
     openclaw_installed: bool,
     openclaw_version: Option<String>,
     latest_openclaw_version: Option<String>,
@@ -172,6 +174,23 @@ fn locale_owned(locale: LocalePreference, zh: impl Into<String>, en: impl Into<S
     }
 }
 
+fn install_target_for_request(
+    platform: Platform,
+    snapshot: &EnvironmentSnapshot,
+    request: &InstallRequest,
+) -> Result<RuntimeTarget> {
+    if !matches!(platform, Platform::Windows) {
+        return Ok(snapshot.runtime_target);
+    }
+
+    match request.windows_target {
+        None => Ok(snapshot.runtime_target),
+        Some(RuntimeTarget::WindowsNative) => Ok(RuntimeTarget::WindowsNative),
+        Some(RuntimeTarget::WindowsWsl) => Ok(RuntimeTarget::WindowsWsl),
+        Some(other) => Err(anyhow!("invalid windows install target: {:?}", other)),
+    }
+}
+
 #[tauri::command]
 pub fn detect_environment(
     app: AppHandle,
@@ -187,17 +206,24 @@ pub fn install_openclaw(
     request: InstallRequest,
 ) -> Result<OperationTaskSnapshot, String> {
     let snapshot = refresh_environment_snapshot(&app, &state, false).map_err(err_to_string)?;
+    let target_profile = snapshot
+        .saved_settings
+        .as_ref()
+        .map(|settings| settings.target_profile.clone())
+        .unwrap_or_default();
+    let runtime_target = install_target_for_request(
+        current_platform().map_err(err_to_string)?,
+        &snapshot,
+        &request,
+    )
+    .map_err(err_to_string)?;
     start_install_or_update_task(
         &app,
         &state,
         OperationKind::Install,
         request,
-        snapshot.runtime_target,
-        snapshot
-            .saved_settings
-            .as_ref()
-            .map(|settings| settings.target_profile.clone())
-            .unwrap_or_default(),
+        runtime_target,
+        target_profile,
     )
     .map_err(err_to_string)
 }
@@ -346,10 +372,8 @@ pub async fn test_connection(
         .and_then(|store| store.get_secret())
         .map_err(err_to_string)?;
     let target_profile = settings.target_profile.clone();
-    let runtime_target = resolve_runtime_target(
-        current_platform().map_err(err_to_string)?,
-        &target_profile,
-    );
+    let runtime_target =
+        resolve_runtime_target(current_platform().map_err(err_to_string)?, &target_profile);
     let app_handle = app.clone();
     let company_profile = settings.company_profile.clone();
 
@@ -400,10 +424,8 @@ pub fn start_runtime(app: AppHandle, state: State<'_, AppState>) -> Result<Runti
         .and_then(|store| store.get_secret())
         .map_err(err_to_string)?;
     let target_profile = settings.target_profile.clone();
-    let runtime_target = resolve_runtime_target(
-        current_platform().map_err(err_to_string)?,
-        &target_profile,
-    );
+    let runtime_target =
+        resolve_runtime_target(current_platform().map_err(err_to_string)?, &target_profile);
     let shared_runtime = state.runtime.clone();
     let app_handle = app.clone();
     let company_profile = settings.company_profile.clone();
@@ -541,10 +563,29 @@ fn resolve_environment(
     latest_version_cache: &Arc<Mutex<Option<LatestOpenClawVersionCacheEntry>>>,
 ) -> ResolvedEnvironment {
     let host_ssh_installed = command_available("ssh");
-    let target_ssh_installed =
-        target_command_available(runtime_target.clone(), target_profile, "ssh");
-    let openclaw_installed =
-        target_command_available(runtime_target.clone(), target_profile, "openclaw");
+    let host_openclaw_installed = command_available("openclaw");
+    let windows_wsl_status = matches!(
+        runtime_target,
+        RuntimeTarget::WindowsNative | RuntimeTarget::WindowsWsl
+    )
+    .then(|| detect_wsl_status(target_profile));
+    let wsl_openclaw_installed = windows_wsl_status
+        .as_ref()
+        .map(|status| {
+            status.ready
+                && target_command_available(RuntimeTarget::WindowsWsl, target_profile, "openclaw")
+        })
+        .unwrap_or(false);
+    let target_ssh_installed = match runtime_target {
+        RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => host_ssh_installed,
+        RuntimeTarget::WindowsWsl => {
+            target_command_available(RuntimeTarget::WindowsWsl, target_profile, "ssh")
+        }
+    };
+    let openclaw_installed = match runtime_target {
+        RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => host_openclaw_installed,
+        RuntimeTarget::WindowsWsl => wsl_openclaw_installed,
+    };
     let openclaw_version = openclaw_installed
         .then(|| read_openclaw_version(runtime_target.clone(), target_profile))
         .flatten();
@@ -568,13 +609,15 @@ fn resolve_environment(
     );
     let wsl_status = match runtime_target {
         RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => None,
-        RuntimeTarget::WindowsWsl => Some(detect_wsl_status(target_profile)),
+        RuntimeTarget::WindowsWsl => windows_wsl_status,
     };
 
     ResolvedEnvironment {
         runtime_target,
         host_ssh_installed,
+        host_openclaw_installed,
         target_ssh_installed,
+        wsl_openclaw_installed,
         openclaw_installed,
         openclaw_version,
         latest_openclaw_version,
@@ -762,11 +805,13 @@ fn build_environment_snapshot(
         os: os.to_string(),
         runtime_target,
         host_ssh_installed: resolved.host_ssh_installed,
+        host_openclaw_installed: resolved.host_openclaw_installed,
         target_ssh_installed: resolved.target_ssh_installed,
         openclaw_installed: resolved.openclaw_installed,
         openclaw_version: resolved.openclaw_version,
         latest_openclaw_version: resolved.latest_openclaw_version,
         update_available: resolved.update_available,
+        wsl_openclaw_installed: resolved.wsl_openclaw_installed,
         has_saved_profile,
         token_status: token_state.status,
         token_status_message: token_state.message,
@@ -777,7 +822,9 @@ fn build_environment_snapshot(
             ui_preferences.locale,
             runtime_target,
             resolved.host_ssh_installed,
+            resolved.host_openclaw_installed,
             resolved.target_ssh_installed,
+            resolved.wsl_openclaw_installed,
             resolved.wsl_status.as_ref(),
         ),
         wsl_status: resolved.wsl_status,
@@ -793,7 +840,9 @@ fn apply_ui_preferences_to_snapshot(
         preferences.locale,
         snapshot.runtime_target,
         snapshot.host_ssh_installed,
+        snapshot.host_openclaw_installed,
         snapshot.target_ssh_installed,
+        snapshot.wsl_openclaw_installed,
         snapshot.wsl_status.as_ref(),
     );
 }
@@ -1292,7 +1341,9 @@ fn install_recommendation(
     locale: LocalePreference,
     runtime_target: RuntimeTarget,
     host_ssh_installed: bool,
+    host_openclaw_installed: bool,
     target_ssh_installed: bool,
+    wsl_openclaw_installed: bool,
     wsl_status: Option<&WslStatus>,
 ) -> String {
     match runtime_target {
@@ -1326,6 +1377,13 @@ fn install_recommendation(
             }
         }
         RuntimeTarget::WindowsWsl => {
+            if !host_openclaw_installed && !wsl_openclaw_installed {
+                return if matches!(locale, LocalePreference::EnUs) {
+                    "OpenClaw is not installed on Windows or WSL yet. Choose whether to install locally on Windows or let BizClaw prepare WSL Ubuntu first.".into()
+                } else {
+                    "当前尚未在 Windows 本机或 WSL 中检测到 OpenClaw。可以选择直接安装到 Windows 本机，或让 BizClaw 先配置 WSL Ubuntu 再安装。".into()
+                };
+            }
             if let Some(status) = wsl_status {
                 if !status.ready {
                     return if matches!(locale, LocalePreference::EnUs) {
@@ -1774,7 +1832,9 @@ fn run_install_or_update(
         }
         let ssh_plan = match runtime_target {
             RuntimeTarget::MacNative => macos_ensure_ssh_plan(),
-            RuntimeTarget::WindowsNative => unreachable!("windows native does not auto-install ssh"),
+            RuntimeTarget::WindowsNative => {
+                unreachable!("windows native does not auto-install ssh")
+            }
             RuntimeTarget::WindowsWsl => wsl_ensure_ssh_plan(&target_profile),
         };
         let ssh_result = run_single_plan(
@@ -2440,8 +2500,7 @@ mod tests {
     use super::{
         apply_ui_preferences_to_snapshot, build_environment_snapshot, cancelled_follow_up,
         gateway_probe_failure_result, inspect_token_state, load_saved_token,
-        persist_profile_atomic,
-        should_treat_plan_as_success, update_available_from_versions,
+        persist_profile_atomic, should_treat_plan_as_success, update_available_from_versions,
         window_background_color_for_theme, window_theme_for_preference,
         with_cached_latest_openclaw_version, ResolvedEnvironment, RuntimePhase, RuntimeStatus,
         SettingsStoreAccess, TokenState,
@@ -2449,9 +2508,8 @@ mod tests {
     use crate::{
         secret_store::{MemorySecretStore, SecretStore},
         types::{
-            CompanyProfile, ConnectionTestStep, LocalePreference, OperationKind,
-            PersistedSettings, RuntimeTarget, TargetProfile, TokenStatus, UiPreferences,
-            UserProfile, WslStatus,
+            CompanyProfile, ConnectionTestStep, LocalePreference, OperationKind, PersistedSettings,
+            RuntimeTarget, TargetProfile, TokenStatus, UiPreferences, UserProfile, WslStatus,
         },
     };
 
@@ -2504,7 +2562,9 @@ mod tests {
             ResolvedEnvironment {
                 runtime_target: RuntimeTarget::MacNative,
                 host_ssh_installed: true,
+                host_openclaw_installed: true,
                 target_ssh_installed: true,
+                wsl_openclaw_installed: false,
                 openclaw_installed: true,
                 openclaw_version: Some("OpenClaw 2026.3.8".into()),
                 latest_openclaw_version: Some("2026.3.9".into()),
@@ -2541,7 +2601,9 @@ mod tests {
             ResolvedEnvironment {
                 runtime_target: RuntimeTarget::WindowsWsl,
                 host_ssh_installed: false,
+                host_openclaw_installed: false,
                 target_ssh_installed: false,
+                wsl_openclaw_installed: false,
                 openclaw_installed: false,
                 openclaw_version: None,
                 latest_openclaw_version: None,
@@ -2583,7 +2645,9 @@ mod tests {
             ResolvedEnvironment {
                 runtime_target: RuntimeTarget::WindowsNative,
                 host_ssh_installed: true,
+                host_openclaw_installed: true,
                 target_ssh_installed: true,
+                wsl_openclaw_installed: false,
                 openclaw_installed: true,
                 openclaw_version: Some("OpenClaw 2026.3.8".into()),
                 latest_openclaw_version: Some("2026.3.9".into()),
@@ -2773,7 +2837,9 @@ mod tests {
             ResolvedEnvironment {
                 runtime_target: RuntimeTarget::WindowsWsl,
                 host_ssh_installed: true,
+                host_openclaw_installed: false,
                 target_ssh_installed: false,
+                wsl_openclaw_installed: false,
                 openclaw_installed: false,
                 openclaw_version: None,
                 latest_openclaw_version: None,
@@ -2805,7 +2871,7 @@ mod tests {
         assert_eq!(snapshot.ui_preferences.locale, LocalePreference::EnUs);
         assert_eq!(
             snapshot.install_recommendation,
-            "WSL is available, but Ubuntu is missing OpenSSH. BizClaw will install it during setup."
+            "OpenClaw is not installed on Windows or WSL yet. Choose whether to install locally on Windows or let BizClaw prepare WSL Ubuntu first."
         );
     }
 

@@ -70,6 +70,7 @@ import type {
   LocalePreference,
   UiPreferences,
   UserProfile,
+  WindowsInstallTarget,
 } from '@/types'
 
 const defaultUserProfile = (): UserProfile => ({
@@ -216,6 +217,7 @@ export function useAppModel() {
   const lastError = ref<string | null>(null)
   const lastErrorAction = ref<string | null>(null)
   const installBusyAction = ref<'check-update' | null>(null)
+  const lastInstallRequest = ref<InstallRequest | null>(null)
   const bizclawUpdate = ref<BizClawUpdateState>(createBizClawUpdateState())
   const manualInstallBusy = ref(false)
   const saveBusy = ref(false)
@@ -232,6 +234,7 @@ export function useAppModel() {
   const targetProfile = reactive(defaultTargetProfile())
   const connectionTestModal = reactive<ConnectionTestModalState>(createConnectionTestModalState())
   const installRemediationModal = reactive<InstallRemediationModalState>(createInstallRemediationModalState())
+  const windowsInstallChoiceModalOpen = ref(false)
   const unlistenCallbacks: Array<() => void> = []
   const pendingBizClawUpdate = shallowRef<PendingBizClawUpdate | null>(null)
   let stopObservingSystemTheme: (() => void) | null = null
@@ -268,7 +271,7 @@ export function useAppModel() {
     }
 
     if (!environment.value) {
-      return translate('runtime.startDisabled.checking')
+      return null
     }
 
     if (environment.value.runtimeTarget === 'windowsWsl' && !environment.value.wslStatus?.ready) {
@@ -587,6 +590,9 @@ export function useAppModel() {
   async function refreshEnvironment() {
     const snapshot = await detectEnvironment()
     environment.value = snapshot
+    if (!shouldPromptWindowsInstallChoice(snapshot)) {
+      windowsInstallChoiceModalOpen.value = false
+    }
     syncUiPreferences(snapshot.uiPreferences)
     if (!hydratedFromSaved.value && snapshot.savedSettings) {
       Object.assign(
@@ -708,6 +714,12 @@ export function useAppModel() {
 
   function resetInstallRemediationModal() {
     Object.assign(installRemediationModal, createInstallRemediationModalState())
+  }
+
+  function shouldPromptWindowsInstallChoice(snapshot: EnvironmentSnapshot | null) {
+    return snapshot?.os === 'windows'
+      && snapshot.hostOpenclawInstalled === false
+      && snapshot.wslOpenclawInstalled === false
   }
 
   function openInstallRemediationModal(
@@ -848,6 +860,10 @@ export function useAppModel() {
     kind: Extract<OperationKind, 'install' | 'update'>,
     request: InstallRequest,
   ) {
+    if (kind === 'install') {
+      lastInstallRequest.value = { ...request }
+    }
+
     resetOperationState()
     const action = kind === 'install' ? 'install' : 'update'
     const runner = kind === 'install' ? installOpenClaw : updateOpenClaw
@@ -870,9 +886,27 @@ export function useAppModel() {
 
   async function installCli() {
     activeSection.value = 'install'
+    if (shouldPromptWindowsInstallChoice(environment.value)) {
+      windowsInstallChoiceModalOpen.value = true
+      return
+    }
+
     await runOpenClawOperation('install', {
       preferOfficial: true,
       allowElevation: false,
+    })
+  }
+
+  function closeWindowsInstallChoiceModal() {
+    windowsInstallChoiceModalOpen.value = false
+  }
+
+  async function chooseWindowsInstallTarget(target: WindowsInstallTarget) {
+    windowsInstallChoiceModalOpen.value = false
+    await runOpenClawOperation('install', {
+      preferOfficial: true,
+      allowElevation: false,
+      windowsTarget: target,
     })
   }
 
@@ -1018,6 +1052,7 @@ export function useAppModel() {
     }
 
     const request: InstallRequest = {
+      ...(actionKind === 'install' ? lastInstallRequest.value ?? {} : {}),
       preferOfficial: true,
       allowElevation: kind === 'requestElevation',
     }
@@ -1091,16 +1126,18 @@ export function useAppModel() {
     lastErrorAction.value = null
     logs.value = []
 
-    const previousEnvironment = environment.value ?? await detectEnvironment()
-    environment.value = {
-      ...previousEnvironment,
-      runtimeStatus: {
-        phase: 'connecting',
-        sshConnected: false,
-        nodeConnected: false,
-        gatewayConnected: false,
-        lastError: null,
-      },
+    const previousEnvironment = environment.value
+    if (previousEnvironment) {
+      environment.value = {
+        ...previousEnvironment,
+        runtimeStatus: {
+          phase: 'connecting',
+          sshConnected: false,
+          nodeConnected: false,
+          gatewayConnected: false,
+          lastError: null,
+        },
+      }
     }
 
     try {
@@ -1110,11 +1147,15 @@ export function useAppModel() {
           ...environment.value,
           runtimeStatus: status,
         }
+      } else {
+        void refreshEnvironment()
       }
     } catch (error) {
       lastError.value = error instanceof Error ? error.message : String(error)
       lastErrorAction.value = 'start'
-      environment.value = previousEnvironment
+      if (previousEnvironment) {
+        environment.value = previousEnvironment
+      }
     } finally {
       runtimeStartBusy.value = false
     }
@@ -1137,16 +1178,14 @@ export function useAppModel() {
     await refreshEnvironment()
   }
 
-  onMounted(async () => {
-    await refreshOperationalState({ includeLogs: true })
-    await syncBizClawCurrentVersion()
-    unlistenCallbacks.push(
-      await onRuntimeLog((entry) => {
+  let disposed = false
+
+  async function initializeSubscriptions() {
+    const callbacks = await Promise.all([
+      onRuntimeLog((entry) => {
         logs.value = [...logs.value, entry].slice(-400)
       }),
-    )
-    unlistenCallbacks.push(
-      await onRuntimeStatus((status) => {
+      onRuntimeStatus((status) => {
         if (!environment.value) {
           return
         }
@@ -1156,30 +1195,38 @@ export function useAppModel() {
           runtimeStatus: status,
         }
       }),
-    )
-    unlistenCallbacks.push(
-      await onOperationStatus((snapshot) => {
+      onOperationStatus((snapshot) => {
         applyOperationTaskSnapshot(snapshot)
       }),
-    )
-    unlistenCallbacks.push(
-      await onOperationEvent((entry) => {
+      onOperationEvent((entry) => {
         operationEvents.value = [...operationEvents.value, entry].slice(-200)
       }),
-    )
-    unlistenCallbacks.push(
-      await onConnectionTestEvent((entry) => {
+      onConnectionTestEvent((entry) => {
         applyConnectionTestEvent(entry)
       }),
-    )
-    unlistenCallbacks.push(
-      await onRefreshRequested(() => {
+      onRefreshRequested(() => {
         void refreshEnvironment()
       }),
-    )
+    ])
+
+    if (disposed) {
+      for (const unlisten of callbacks) {
+        unlisten()
+      }
+      return
+    }
+
+    unlistenCallbacks.push(...callbacks)
+  }
+
+  onMounted(() => {
+    void initializeSubscriptions()
+    void refreshOperationalState({ includeLogs: true })
+    void syncBizClawCurrentVersion()
   })
 
   onBeforeUnmount(() => {
+    disposed = true
     stopObservingSystemTheme?.()
     stopObservingSystemTheme = null
     while (unlistenCallbacks.length > 0) {
@@ -1297,6 +1344,9 @@ export function useAppModel() {
     gatewayStateTone,
     sshStateLabel,
     uiPreferences,
+    windowsInstallChoiceModalOpen,
+    closeWindowsInstallChoiceModal,
+    chooseWindowsInstallTarget,
     operationTaskPhaseLabel,
     updateCli,
     userProfile,

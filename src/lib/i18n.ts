@@ -103,6 +103,15 @@ const messages = {
       progressUnknown: '已下载 {downloaded} bytes',
       currentBizClawVersion: '当前 BizClaw 版本',
       latestBizClawVersion: '最新 BizClaw 版本',
+      windowsChoice: {
+        eyebrow: 'Windows 安装方式',
+        title: '选择 OpenClaw 安装位置',
+        detail: '当前未检测到 Windows 本机或 WSL Ubuntu 中的 OpenClaw。你可以直接安装到 Windows 本机，或者让 BizClaw 先配置 WSL / Ubuntu 再继续安装。',
+        nativeAction: '安装到 Windows 本机',
+        wslAction: '安装到 WSL Ubuntu',
+        wslReadyDetail: '{name} 已就绪。选择 WSL 安装后，BizClaw 会直接在该环境中安装 OpenClaw。',
+        wslSetupDetail: '如果选择 WSL 安装，BizClaw 会先配置 {name}，过程中可能需要你授权、重启 Windows，或首次打开 Ubuntu 完成初始化。',
+      },
       remediation: {
         eyebrow: '需要确认',
         elevationTitle: '需要管理员授权',
@@ -402,6 +411,15 @@ const messages = {
       progressUnknown: 'Downloaded {downloaded} bytes',
       currentBizClawVersion: 'Current BizClaw Version',
       latestBizClawVersion: 'Latest BizClaw Version',
+      windowsChoice: {
+        eyebrow: 'Windows Install Mode',
+        title: 'Choose where to install OpenClaw',
+        detail: 'OpenClaw was not detected on local Windows or inside WSL Ubuntu. You can install it directly on Windows, or let BizClaw prepare WSL / Ubuntu first and install it there.',
+        nativeAction: 'Install on local Windows',
+        wslAction: 'Install in WSL Ubuntu',
+        wslReadyDetail: '{name} is ready. If you choose WSL, BizClaw will install OpenClaw there directly.',
+        wslSetupDetail: 'If you choose WSL, BizClaw will prepare {name} first. This may require administrator approval, a Windows restart, or opening Ubuntu once to finish initialization.',
+      },
       remediation: {
         eyebrow: 'Confirmation Needed',
         elevationTitle: 'Administrator permission required',

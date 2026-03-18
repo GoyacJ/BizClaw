@@ -22,14 +22,18 @@ use crate::{
     config_store::{JsonSettingsStore, JsonUiPreferencesStore},
     install::{
         command_available, compare_versions, current_platform, detect_wsl_status,
-        elevated_install_plan, install_plans_for_target, looks_like_permission_error,
+        elevated_install_plan, install_plans_for_target,
         macos_ensure_ssh_plan, read_latest_openclaw_version, read_openclaw_version,
         resolve_runtime_target, target_command_available, update_plans_for_target,
+        should_retry_with_elevation,
+        verify_windows_git_installation, verify_windows_node_installation,
+        verify_windows_ssh_installation,
         windows_local_git_ready, windows_local_git_version, windows_local_node_ready,
         windows_local_node_version, windows_local_openclaw_ready,
         windows_local_openclaw_version, windows_local_ssh_ready, windows_native_ensure_git_plan,
         windows_native_ensure_node_plan, windows_native_ensure_ssh_plan, wsl_bootstrap_plan,
-        wsl_ensure_ssh_plan, InstallPlan, Platform, MANUAL_INSTALL_URL, WINDOWS_NODE_MIN_MAJOR,
+        wsl_ensure_ssh_plan, InstallPlan, Platform, WindowsInstallVerification,
+        MANUAL_INSTALL_URL, WINDOWS_NODE_MIN_MAJOR,
     },
     openclaw_management,
     operation_supervisor::{
@@ -138,6 +142,7 @@ struct LatestOpenClawVersionCacheEntry {
 struct StreamedPlanResult {
     strategy: String,
     success: bool,
+    exit_code: i32,
     stdout: String,
     stderr: String,
     needs_elevation: bool,
@@ -170,6 +175,7 @@ impl Drop for PortTaskGuard {
 const CONNECTION_TEST_TIMEOUT_MS: u64 = 8_000;
 const CONNECTION_TEST_TUNNEL_READY_TIMEOUT: Duration = Duration::from_secs(6);
 const CONNECTION_TEST_TUNNEL_POLL_INTERVAL: Duration = Duration::from_millis(150);
+const WINDOWS_INSTALL_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn locale_text(locale: LocalePreference, zh: &'static str, en: &'static str) -> &'static str {
     if matches!(locale, LocalePreference::EnUs) {
@@ -201,6 +207,183 @@ fn install_target_for_request(
         Some(RuntimeTarget::WindowsNative) => Ok(RuntimeTarget::WindowsNative),
         Some(RuntimeTarget::WindowsWsl) => Ok(RuntimeTarget::WindowsWsl),
         Some(other) => Err(anyhow!("invalid windows install target: {:?}", other)),
+    }
+}
+
+fn extract_installer_exit_code(result: &StreamedPlanResult) -> Option<String> {
+    if result.exit_code != 0 {
+        return Some(result.exit_code.to_string());
+    }
+
+    [result.stdout.as_str(), result.stderr.as_str()]
+        .into_iter()
+        .flat_map(str::lines)
+        .find_map(|line| {
+            line.split("exit code:")
+                .nth(1)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+}
+
+fn node_install_failure_follow_up(
+    locale: LocalePreference,
+    result: &StreamedPlanResult,
+) -> String {
+    if let Some(exit_code) = extract_installer_exit_code(result) {
+        return locale_owned(
+            locale,
+            format!("Node.js installer finished with exit code {exit_code}. Check the output and try again."),
+            format!("The Node.js installer finished with exit code {exit_code}. Check the output and try again."),
+        );
+    }
+
+    locale_text(
+        locale,
+        "BizClaw could not install Node.js automatically. Check the output, then retry and allow the Windows elevation prompt to continue.",
+        "BizClaw could not install Node.js automatically. Check the output, then retry and allow the Windows elevation prompt to continue.",
+    )
+    .into()
+}
+
+fn git_install_failure_follow_up(
+    locale: LocalePreference,
+    result: &StreamedPlanResult,
+) -> String {
+    if let Some(exit_code) = extract_installer_exit_code(result) {
+        return locale_owned(
+            locale,
+            format!("Git installer finished with exit code {exit_code}. Check the output and try again."),
+            format!("The Git installer finished with exit code {exit_code}. Check the output and try again."),
+        );
+    }
+
+    locale_text(
+        locale,
+        "BizClaw could not install Git automatically. Check the output, then retry and allow the Windows elevation prompt to continue.",
+        "BizClaw could not install Git automatically. Check the output, then retry and allow the Windows elevation prompt to continue.",
+    )
+    .into()
+}
+
+fn openssh_verification_follow_up(
+    locale: LocalePreference,
+    verification: &WindowsInstallVerification,
+) -> String {
+    match verification {
+        WindowsInstallVerification::MissingExecutable => locale_text(
+            locale,
+            "The OpenSSH install step completed, but ssh.exe was not detected. Check whether Windows OpenSSH Client finished installing.",
+            "The OpenSSH install step completed, but ssh.exe was not detected. Check whether Windows OpenSSH Client finished installing.",
+        )
+        .into(),
+        WindowsInstallVerification::CommandFailed { path, details } => locale_owned(
+            locale,
+            format!(
+                "OpenSSH was installed at {}, but running ssh -V failed: {}.",
+                path.display(),
+                details
+            ),
+            format!(
+                "OpenSSH was installed at {}, but running ssh -V failed: {}.",
+                path.display(),
+                details
+            ),
+        ),
+        WindowsInstallVerification::Verified { .. }
+        | WindowsInstallVerification::VersionTooLow { .. } => locale_text(
+            locale,
+            "The OpenSSH install step completed, but verification still failed. Check the output and try again.",
+            "The OpenSSH install step completed, but verification still failed. Check the output and try again.",
+        )
+        .into(),
+    }
+}
+
+fn node_verification_follow_up(
+    locale: LocalePreference,
+    verification: &WindowsInstallVerification,
+) -> String {
+    match verification {
+        WindowsInstallVerification::MissingExecutable => locale_text(
+            locale,
+            "The Node.js installer ran, but node.exe was not detected.",
+            "The Node.js installer ran, but node.exe was not detected.",
+        )
+        .into(),
+        WindowsInstallVerification::CommandFailed { path, details } => locale_owned(
+            locale,
+            format!(
+                "The Node.js installer ran and {} was detected, but running --version failed: {}.",
+                path.display(),
+                details
+            ),
+            format!(
+                "The Node.js installer ran and {} was detected, but running --version failed: {}.",
+                path.display(),
+                details
+            ),
+        ),
+        WindowsInstallVerification::VersionTooLow {
+            version,
+            minimum_major,
+            ..
+        } => locale_owned(
+            locale,
+            format!(
+                "The Node.js installer ran, but the detected version {} is still below the required {}+.",
+                version, minimum_major
+            ),
+            format!(
+                "The Node.js installer ran, but the detected version {} is still below the required {}+.",
+                version, minimum_major
+            ),
+        ),
+        WindowsInstallVerification::Verified { .. } => locale_text(
+            locale,
+            "The Node.js installer ran, but verification still failed.",
+            "The Node.js installer ran, but verification still failed.",
+        )
+        .into(),
+    }
+}
+
+fn git_verification_follow_up(
+    locale: LocalePreference,
+    verification: &WindowsInstallVerification,
+) -> String {
+    match verification {
+        WindowsInstallVerification::MissingExecutable => locale_text(
+            locale,
+            "The Git installer ran, but git.exe was not detected.",
+            "The Git installer ran, but git.exe was not detected.",
+        )
+        .into(),
+        WindowsInstallVerification::CommandFailed { path, details } => locale_owned(
+            locale,
+            format!(
+                "The Git installer ran and {} was detected, but running --version failed: {}.",
+                path.display(),
+                details
+            ),
+            format!(
+                "The Git installer ran and {} was detected, but running --version failed: {}.",
+                path.display(),
+                details
+            ),
+        ),
+        WindowsInstallVerification::VersionTooLow { version, .. } => locale_owned(
+            locale,
+            format!("The Git installer ran, but the detected version still looks wrong: {}.", version),
+            format!("The Git installer ran, but the detected version still looks wrong: {}.", version),
+        ),
+        WindowsInstallVerification::Verified { .. } => locale_text(
+            locale,
+            "The Git installer ran, but verification still failed.",
+            "The Git installer ran, but verification still failed.",
+        )
+        .into(),
     }
 }
 
@@ -2341,6 +2524,24 @@ fn run_install_or_update(
                 remediation,
             });
         }
+        if matches!(runtime_target, RuntimeTarget::WindowsNative) {
+            let verification = verify_windows_ssh_installation(WINDOWS_INSTALL_VERIFICATION_TIMEOUT);
+            if !matches!(verification, WindowsInstallVerification::Verified { .. }) {
+                let remediation = remediation_for_failed_plan(request.allow_elevation, &ssh_result);
+                return Ok(OperationResult {
+                    kind,
+                    strategy: ssh_result.strategy,
+                    success: false,
+                    step: OperationStep::EnsureSsh,
+                    stdout: ssh_result.stdout,
+                    stderr: ssh_result.stderr,
+                    needs_elevation: ssh_result.needs_elevation,
+                    manual_url: MANUAL_INSTALL_URL.into(),
+                    follow_up: openssh_verification_follow_up(locale, &verification),
+                    remediation,
+                });
+            }
+        }
         resolved = resolve_environment(
             runtime_target.clone(),
             &target_profile,
@@ -2424,6 +2625,38 @@ fn run_install_or_update(
                 node_result.stdout,
                 node_result.stderr,
             ));
+        }
+        if !node_result.success {
+            let remediation = remediation_for_failed_plan(request.allow_elevation, &node_result);
+            let follow_up = node_install_failure_follow_up(locale, &node_result);
+            return Ok(OperationResult {
+                kind,
+                strategy: node_result.strategy,
+                success: false,
+                step: OperationStep::EnsureNode,
+                stdout: node_result.stdout,
+                stderr: node_result.stderr,
+                needs_elevation: node_result.needs_elevation,
+                manual_url: MANUAL_INSTALL_URL.into(),
+                follow_up,
+                remediation,
+            });
+        }
+        let node_verification = verify_windows_node_installation(WINDOWS_INSTALL_VERIFICATION_TIMEOUT);
+        if !matches!(node_verification, WindowsInstallVerification::Verified { .. }) {
+            let remediation = remediation_for_failed_plan(request.allow_elevation, &node_result);
+            return Ok(OperationResult {
+                kind,
+                strategy: node_result.strategy,
+                success: false,
+                step: OperationStep::EnsureNode,
+                stdout: node_result.stdout,
+                stderr: node_result.stderr,
+                needs_elevation: node_result.needs_elevation,
+                manual_url: MANUAL_INSTALL_URL.into(),
+                follow_up: node_verification_follow_up(locale, &node_verification),
+                remediation,
+            });
         }
         if !node_result.success {
             let remediation = remediation_for_failed_plan(request.allow_elevation, &node_result);
@@ -2522,6 +2755,38 @@ fn run_install_or_update(
                 git_result.stdout,
                 git_result.stderr,
             ));
+        }
+        if !git_result.success {
+            let remediation = remediation_for_failed_plan(request.allow_elevation, &git_result);
+            let follow_up = git_install_failure_follow_up(locale, &git_result);
+            return Ok(OperationResult {
+                kind,
+                strategy: git_result.strategy,
+                success: false,
+                step: OperationStep::EnsureGit,
+                stdout: git_result.stdout,
+                stderr: git_result.stderr,
+                needs_elevation: git_result.needs_elevation,
+                manual_url: MANUAL_INSTALL_URL.into(),
+                follow_up,
+                remediation,
+            });
+        }
+        let git_verification = verify_windows_git_installation(WINDOWS_INSTALL_VERIFICATION_TIMEOUT);
+        if !matches!(git_verification, WindowsInstallVerification::Verified { .. }) {
+            let remediation = remediation_for_failed_plan(request.allow_elevation, &git_result);
+            return Ok(OperationResult {
+                kind,
+                strategy: git_result.strategy,
+                success: false,
+                step: OperationStep::EnsureGit,
+                stdout: git_result.stdout,
+                stderr: git_result.stderr,
+                needs_elevation: git_result.needs_elevation,
+                manual_url: MANUAL_INSTALL_URL.into(),
+                follow_up: git_verification_follow_up(locale, &git_verification),
+                remediation,
+            });
         }
         if !git_result.success {
             let remediation = remediation_for_failed_plan(request.allow_elevation, &git_result);
@@ -2793,6 +3058,7 @@ fn run_install_or_update(
     let result = last_result.unwrap_or_else(|| StreamedPlanResult {
         strategy: "unknown".into(),
         success: false,
+        exit_code: -1,
         stdout: String::new(),
         stderr: locale_text(locale, "安装未执行。", "Installation did not run.").into(),
         needs_elevation: false,
@@ -3097,9 +3363,14 @@ fn execute_plan_streaming(
 
     clear_child(operation_state);
 
-    let merged = format!("{stdout_buffer}\n{stderr_buffer}");
     let status = exit_status.expect("operation exit status should be available");
+    let exit_code = status.code().unwrap_or(-1);
     let success = status.success() && !cancelled;
+    let needs_elevation = should_retry_with_elevation(
+        elevation_command_name(plan),
+        exit_code,
+        &stderr_buffer,
+    );
     emit_operation_event(
         app,
         Some(operation_state),
@@ -3137,10 +3408,20 @@ fn execute_plan_streaming(
     Ok(StreamedPlanResult {
         strategy: plan.strategy.into(),
         success,
+        exit_code,
         stdout: stdout_buffer,
         stderr: stderr_buffer,
-        needs_elevation: looks_like_permission_error(&merged),
+        needs_elevation,
     })
+}
+
+fn elevation_command_name(plan: &InstallPlan) -> &str {
+    match plan.strategy {
+        "ensure-node-download" => "node",
+        "ensure-git-download" => "git",
+        "ensure-ssh" | "ensure-ssh-download" => "ssh",
+        _ => plan.program.as_str(),
+    }
 }
 
 fn read_stream(

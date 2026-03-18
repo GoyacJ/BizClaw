@@ -1,6 +1,8 @@
 use std::{
     env,
     path::{Path, PathBuf},
+    thread,
+    time::{Duration, Instant},
 };
 
 use anyhow::{anyhow, Result};
@@ -26,6 +28,19 @@ pub struct InstallPlan {
 
 pub const MANUAL_INSTALL_URL: &str = "https://docs.openclaw.ai/install";
 pub const WINDOWS_NODE_MIN_MAJOR: u32 = 22;
+const WINDOWS_INSTALL_VERIFICATION_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowsInstallVerification {
+    Verified { path: PathBuf, version: String },
+    MissingExecutable,
+    CommandFailed { path: PathBuf, details: String },
+    VersionTooLow {
+        path: PathBuf,
+        version: String,
+        minimum_major: u32,
+    },
+}
 
 pub fn current_platform() -> Result<Platform> {
     match env::consts::OS {
@@ -105,6 +120,41 @@ pub fn windows_local_git_version() -> Option<String> {
         .output()
         .ok()?;
     read_first_non_empty_line(output)
+}
+
+pub fn verify_windows_node_installation(timeout: Duration) -> WindowsInstallVerification {
+    verify_windows_installation(timeout, windows_node_executable_candidates, "--version", |path, version| {
+        if node_version_satisfies_minimum(version) {
+            WindowsInstallVerification::Verified {
+                path: path.to_path_buf(),
+                version: version.to_string(),
+            }
+        } else {
+            WindowsInstallVerification::VersionTooLow {
+                path: path.to_path_buf(),
+                version: version.to_string(),
+                minimum_major: WINDOWS_NODE_MIN_MAJOR,
+            }
+        }
+    })
+}
+
+pub fn verify_windows_git_installation(timeout: Duration) -> WindowsInstallVerification {
+    verify_windows_installation(timeout, windows_git_executable_candidates, "--version", |path, version| {
+        WindowsInstallVerification::Verified {
+            path: path.to_path_buf(),
+            version: version.to_string(),
+        }
+    })
+}
+
+pub fn verify_windows_ssh_installation(timeout: Duration) -> WindowsInstallVerification {
+    verify_windows_installation(timeout, windows_ssh_executable_candidates, "-V", |path, version| {
+        WindowsInstallVerification::Verified {
+            path: path.to_path_buf(),
+            version: version.to_string(),
+        }
+    })
 }
 
 pub fn windows_local_openclaw_ready() -> bool {
@@ -189,9 +239,12 @@ pub fn windows_native_ensure_ssh_plan() -> InstallPlan {
                 "$ErrorActionPreference='Stop'; ",
                 "$capability = Get-WindowsCapability -Online | Where-Object { $_.Name -like 'OpenSSH.Client*' } | Select-Object -First 1; ",
                 "if ($null -ne $capability) { ",
+                "  Write-Output ('OpenSSH capability execution started: ' + $capability.Name); ",
                 "  if ($capability.State -ne 'Installed') { Add-WindowsCapability -Online -Name $capability.Name | Out-Null }; ",
+                "  Write-Output 'OpenSSH capability execution finished with exit code: 0'; ",
+                "  Write-Output 'Verifying OpenSSH installation'; ",
                 "  $capabilitySsh = Join-Path $env:WINDIR 'System32\\OpenSSH\\ssh.exe'; ",
-                "  if (Test-Path $capabilitySsh) { Write-Output ('OpenSSH ready: ' + $capabilitySsh); exit 0 } ",
+                "  if (Test-Path $capabilitySsh) { Write-Output ('OpenSSH verification pending: ' + $capabilitySsh); exit 0 } ",
                 "} ",
                 "$downloadDir = Join-Path $env:LOCALAPPDATA 'BizClaw\\downloads'; ",
                 "$toolsDir = Join-Path $env:LOCALAPPDATA 'BizClaw\\tools'; ",
@@ -203,9 +256,13 @@ pub fn windows_native_ensure_ssh_plan() -> InstallPlan {
                 "if ($null -eq $asset) { throw 'Could not resolve the latest Win32-OpenSSH Windows x64 archive.' }; ",
                 "$archive = Join-Path $downloadDir $asset.name; ",
                 "if (-not (Test-Path $archive)) { Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile $archive }; ",
+                "Write-Output ('OpenSSH installer download complete: ' + $archive); ",
                 "$target = Join-Path $toolsDir 'OpenSSH-Win64'; ",
                 "if (Test-Path $target) { Remove-Item -Recurse -Force $target }; ",
+                "Write-Output ('OpenSSH installer execution started: ' + $archive); ",
                 "Expand-Archive -Path $archive -DestinationPath $toolsDir -Force; ",
+                "Write-Output 'OpenSSH installer execution finished with exit code: 0'; ",
+                "Write-Output 'Verifying OpenSSH installation'; ",
                 "$ssh = Join-Path $target 'ssh.exe'; ",
                 "if (-not (Test-Path $ssh)) { throw 'OpenSSH extracted, but ssh.exe is missing.' }; ",
                 "$userPath = [Environment]::GetEnvironmentVariable('Path', 'User'); ",
@@ -214,7 +271,7 @@ pub fn windows_native_ensure_ssh_plan() -> InstallPlan {
                 "} elseif (-not (($userPath -split ';') | Where-Object { $_ -eq $target })) { ",
                 "  [Environment]::SetEnvironmentVariable('Path', ($target + ';' + $userPath), 'User') ",
                 "} ",
-                "Write-Output ('OpenSSH ready: ' + $ssh)"
+                "Write-Output ('OpenSSH verification pending: ' + $ssh)"
             )
             .into(),
         ],
@@ -242,8 +299,13 @@ pub fn windows_native_ensure_node_plan() -> Option<InstallPlan> {
                 "$fileName = \"node-$version-x64.msi\"; ",
                 "$installer = Join-Path $downloadDir $fileName; ",
                 "if (-not (Test-Path $installer)) { Invoke-WebRequest -Uri (\"https://nodejs.org/dist/\" + $version + \"/\" + $fileName) -OutFile $installer }; ",
-                "Start-Process msiexec.exe -Wait -ArgumentList @('/i', $installer, '/qn', '/norestart'); ",
-                "Write-Output ('Node.js installer ready: ' + $fileName)"
+                "Write-Output ('Node.js installer download complete: ' + $installer); ",
+                "Write-Output ('Node.js installer execution started: ' + $installer); ",
+                "$process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/i', $installer, '/qn', '/norestart'); ",
+                "$exitCode = $process.ExitCode; ",
+                "Write-Output ('Node.js installer execution finished with exit code: ' + $exitCode); ",
+                "if ($exitCode -ne 0) { exit $exitCode }; ",
+                "Write-Output 'Verifying Node.js installation'"
             )
             .into(),
         ],
@@ -270,8 +332,13 @@ pub fn windows_native_ensure_git_plan() -> Option<InstallPlan> {
                 "if ($null -eq $asset) { throw 'Could not resolve the latest Git for Windows 64-bit installer.' }; ",
                 "$installer = Join-Path $downloadDir $asset.name; ",
                 "if (-not (Test-Path $installer)) { Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile $installer }; ",
-                "Start-Process -FilePath $installer -Wait -ArgumentList @('/VERYSILENT', '/NORESTART', '/NOCANCEL', '/SP-'); ",
-                "Write-Output ('Git installer ready: ' + $asset.name)"
+                "Write-Output ('Git installer download complete: ' + $installer); ",
+                "Write-Output ('Git installer execution started: ' + $installer); ",
+                "$process = Start-Process -FilePath $installer -Wait -PassThru -ArgumentList @('/VERYSILENT', '/NORESTART', '/NOCANCEL', '/SP-'); ",
+                "$exitCode = $process.ExitCode; ",
+                "Write-Output ('Git installer execution finished with exit code: ' + $exitCode); ",
+                "if ($exitCode -ne 0) { exit $exitCode }; ",
+                "Write-Output 'Verifying Git installation'"
             )
             .into(),
         ],
@@ -531,12 +598,63 @@ pub fn compare_versions(installed: &str, latest: &str) -> bool {
     latest_segments > installed_segments
 }
 
-pub fn looks_like_permission_error(output: &str) -> bool {
-    let normalized = output.to_lowercase();
-    normalized.contains("permission denied")
-        || normalized.contains("requires elevation")
-        || normalized.contains("administrator privileges")
-        || normalized.contains("access is denied")
+pub fn should_retry_with_elevation(command: &str, exit_code: i32, stderr: &str) -> bool {
+    if exit_code == 0 {
+        return false;
+    }
+
+    let normalized = stderr.to_lowercase();
+    let command = command.to_ascii_lowercase();
+    let contains_any =
+        |patterns: &[&str]| patterns.iter().any(|pattern| normalized.contains(pattern));
+    let is_git_remote_permission_denied =
+        normalized.contains("permission to ") && normalized.contains(" denied");
+
+    if contains_any(&[
+        "authentication failed",
+        "repository not found",
+        "could not resolve host",
+        "timeout",
+        "not a git repository",
+    ]) || is_git_remote_permission_denied
+        || (command == "git" && normalized.contains("403"))
+    {
+        return false;
+    }
+
+    let has_permission_signal = contains_any(&[
+        "eacces",
+        "eperm",
+        "operation not permitted",
+        "permission denied",
+        "access denied",
+        "access is denied",
+    ]);
+    if !has_permission_signal {
+        return false;
+    }
+
+    if command == "git" {
+        return false == (normalized.contains("repository not found")
+            || normalized.contains("403")
+            || is_git_remote_permission_denied);
+    }
+
+    if command == "ssh" {
+        return contains_any(&[
+            "known_hosts",
+            "identity file",
+            "private key",
+            "unprotected private key file",
+            "bad permissions",
+            "id_rsa",
+            "id_ed25519",
+            ".ssh\\",
+            ".ssh/",
+        ]);
+    }
+
+    true
 }
 
 pub fn wsl_bootstrap_plan(target_profile: &TargetProfile) -> InstallPlan {
@@ -633,69 +751,15 @@ fn listed_wsl_distros() -> Result<Vec<String>> {
 }
 
 fn windows_node_executable_path() -> Option<PathBuf> {
-    if let Ok(path) = which::which("node") {
-        return Some(path);
-    }
-
-    [
-        env::var_os("ProgramFiles")
-            .map(PathBuf::from)
-            .map(|dir| dir.join("nodejs").join("node.exe")),
-        env::var_os("ProgramFiles(x86)")
-            .map(PathBuf::from)
-            .map(|dir| dir.join("nodejs").join("node.exe")),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|path| path.is_file())
+    first_existing_path(windows_node_executable_candidates())
 }
 
 pub fn windows_ssh_executable_path() -> Option<PathBuf> {
-    if let Ok(path) = which::which("ssh") {
-        return Some(path);
-    }
-
-    [
-        env::var_os("ProgramFiles")
-            .map(PathBuf::from)
-            .map(|dir| dir.join("OpenSSH").join("ssh.exe")),
-        env::var_os("WINDIR")
-            .map(PathBuf::from)
-            .map(|dir| dir.join("System32").join("OpenSSH").join("ssh.exe")),
-        env::var_os("LocalAppData").map(PathBuf::from).map(|dir| {
-            dir.join("BizClaw")
-                .join("tools")
-                .join("OpenSSH-Win64")
-                .join("ssh.exe")
-        }),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|path| path.is_file())
+    first_existing_path(windows_ssh_executable_candidates())
 }
 
 fn windows_git_executable_path() -> Option<PathBuf> {
-    if let Ok(path) = which::which("git") {
-        return Some(path);
-    }
-
-    [
-        env::var_os("ProgramFiles")
-            .map(PathBuf::from)
-            .map(|dir| dir.join("Git").join("cmd").join("git.exe")),
-        env::var_os("ProgramFiles")
-            .map(PathBuf::from)
-            .map(|dir| dir.join("Git").join("bin").join("git.exe")),
-        env::var_os("LocalAppData")
-            .map(PathBuf::from)
-            .map(|dir| dir.join("Programs").join("Git").join("cmd").join("git.exe")),
-        env::var_os("LocalAppData")
-            .map(PathBuf::from)
-            .map(|dir| dir.join("Programs").join("Git").join("bin").join("git.exe")),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|path| path.is_file())
+    first_existing_path(windows_git_executable_candidates())
 }
 
 fn windows_openclaw_executable_path() -> Option<PathBuf> {
@@ -768,6 +832,188 @@ fn node_version_satisfies_minimum(version: &str) -> bool {
         .copied()
         .map(|major| major >= WINDOWS_NODE_MIN_MAJOR)
         .unwrap_or(false)
+}
+
+fn verify_windows_installation(
+    timeout: Duration,
+    candidates: impl Fn() -> Vec<PathBuf>,
+    version_arg: &str,
+    validate: impl Fn(&Path, &str) -> WindowsInstallVerification,
+) -> WindowsInstallVerification {
+    poll_windows_installation(timeout, || {
+        let Some(path) = first_existing_path(candidates()) else {
+            return WindowsInstallVerification::MissingExecutable;
+        };
+
+        match read_command_version(&path, version_arg) {
+            Ok(version) => validate(&path, &version),
+            Err(details) => WindowsInstallVerification::CommandFailed { path, details },
+        }
+    })
+}
+
+fn poll_windows_installation(
+    timeout: Duration,
+    mut probe: impl FnMut() -> WindowsInstallVerification,
+) -> WindowsInstallVerification {
+    let started_at = Instant::now();
+    let mut last_result = probe();
+
+    loop {
+        match &last_result {
+            WindowsInstallVerification::Verified { .. }
+            | WindowsInstallVerification::VersionTooLow { .. } => return last_result,
+            WindowsInstallVerification::MissingExecutable
+            | WindowsInstallVerification::CommandFailed { .. } => {
+            }
+        }
+
+        if started_at.elapsed() >= timeout {
+            return last_result;
+        }
+
+        let remaining = timeout.saturating_sub(started_at.elapsed());
+        thread::sleep(std::cmp::min(
+            WINDOWS_INSTALL_VERIFICATION_POLL_INTERVAL,
+            remaining,
+        ));
+        last_result = probe();
+    }
+}
+
+fn read_command_version(program: &Path, version_arg: &str) -> Result<String, String> {
+    let output = new_command(
+        &program.to_string_lossy(),
+        &[version_arg.to_string()],
+    )
+    .output()
+    .map_err(|error| error.to_string())?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if let Some(version) = stdout
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .or_else(|| stderr.lines().find(|line| !line.trim().is_empty()))
+            .map(str::trim)
+            .map(str::to_string)
+        {
+            return Ok(version);
+        }
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let details = if stderr.is_empty() && stdout.is_empty() {
+        format!("exit status {}", output.status)
+    } else if stderr.is_empty() {
+        stdout
+    } else if stdout.is_empty() {
+        stderr
+    } else {
+        format!("{stderr}; {stdout}")
+    };
+
+    Err(details)
+}
+
+fn windows_node_executable_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    push_windows_candidate(
+        &mut candidates,
+        env::var_os("ProgramFiles")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("nodejs").join("node.exe")),
+    );
+    push_windows_candidate(
+        &mut candidates,
+        env::var_os("ProgramFiles(x86)")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("nodejs").join("node.exe")),
+    );
+    push_which_candidate(&mut candidates, "node");
+    candidates
+}
+
+fn windows_ssh_executable_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    push_windows_candidate(
+        &mut candidates,
+        env::var_os("ProgramFiles")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("OpenSSH").join("ssh.exe")),
+    );
+    push_windows_candidate(
+        &mut candidates,
+        env::var_os("WINDIR")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("System32").join("OpenSSH").join("ssh.exe")),
+    );
+    push_windows_candidate(
+        &mut candidates,
+        env::var_os("LocalAppData").map(PathBuf::from).map(|dir| {
+            dir.join("BizClaw")
+                .join("tools")
+                .join("OpenSSH-Win64")
+                .join("ssh.exe")
+        }),
+    );
+    push_which_candidate(&mut candidates, "ssh");
+    candidates
+}
+
+fn windows_git_executable_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    push_windows_candidate(
+        &mut candidates,
+        env::var_os("ProgramFiles")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("Git").join("cmd").join("git.exe")),
+    );
+    push_windows_candidate(
+        &mut candidates,
+        env::var_os("ProgramFiles")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("Git").join("bin").join("git.exe")),
+    );
+    push_windows_candidate(
+        &mut candidates,
+        env::var_os("LocalAppData")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("Programs").join("Git").join("cmd").join("git.exe")),
+    );
+    push_windows_candidate(
+        &mut candidates,
+        env::var_os("LocalAppData")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("Programs").join("Git").join("bin").join("git.exe")),
+    );
+    push_which_candidate(&mut candidates, "git");
+    candidates
+}
+
+fn push_windows_candidate(candidates: &mut Vec<PathBuf>, candidate: Option<PathBuf>) {
+    if let Some(path) = candidate {
+        push_unique_path(candidates, path);
+    }
+}
+
+fn push_which_candidate(candidates: &mut Vec<PathBuf>, command: &str) {
+    if let Ok(path) = which::which(command) {
+        push_unique_path(candidates, path);
+    }
+}
+
+fn push_unique_path(candidates: &mut Vec<PathBuf>, candidate: PathBuf) {
+    if candidates.iter().any(|path| path == &candidate) {
+        return;
+    }
+    candidates.push(candidate);
+}
+
+fn first_existing_path(candidates: Vec<PathBuf>) -> Option<PathBuf> {
+    candidates.into_iter().find(|path| path.is_file())
 }
 
 fn append_path_if_missing(
@@ -857,12 +1103,15 @@ fn sh_quote(input: &str) -> String {
 mod tests {
     use super::{
         compare_versions, default_install_target, fallback_install_plans, install_plans_for_target,
-        looks_like_permission_error, macos_ensure_ssh_plan, official_install_plan,
-        preferred_windows_runtime_target, update_plans_for_target, windows_native_ensure_git_plan,
-        windows_native_ensure_node_plan, windows_native_ensure_ssh_plan, Platform,
+        macos_ensure_ssh_plan, official_install_plan, poll_windows_installation,
+        preferred_windows_runtime_target, should_retry_with_elevation,
+        update_plans_for_target,
+        windows_native_ensure_git_plan, windows_native_ensure_node_plan,
+        windows_native_ensure_ssh_plan, Platform, WindowsInstallVerification,
         WINDOWS_NODE_MIN_MAJOR,
     };
     use crate::types::{RuntimeTarget, TargetProfile};
+    use std::{path::PathBuf, time::Duration};
 
     #[test]
     fn macos_official_plan_uses_install_sh() {
@@ -975,9 +1224,49 @@ mod tests {
     }
 
     #[test]
-    fn detects_permission_related_failures() {
-        let output = "Permission denied while writing to /usr/local/bin";
-        assert!(looks_like_permission_error(output));
+    fn retries_node_when_permission_error_is_detected() {
+        assert!(should_retry_with_elevation(
+            "node",
+            1603,
+            "EPERM: operation not permitted"
+        ));
+    }
+
+    #[test]
+    fn does_not_retry_when_exit_code_is_zero() {
+        assert!(!should_retry_with_elevation(
+            "node",
+            0,
+            "access denied"
+        ));
+    }
+
+    #[test]
+    fn does_not_retry_git_for_remote_permission_failures() {
+        assert!(!should_retry_with_elevation(
+            "git",
+            128,
+            "remote: Permission to org/repo denied to user."
+        ));
+        assert!(!should_retry_with_elevation(
+            "git",
+            128,
+            "fatal: unable to access 'https://example/repo.git/': The requested URL returned error: 403"
+        ));
+    }
+
+    #[test]
+    fn retries_ssh_only_for_local_file_permission_failures() {
+        assert!(should_retry_with_elevation(
+            "ssh",
+            255,
+            "Bad permissions on C:\\Users\\name\\.ssh\\id_rsa: Permission denied"
+        ));
+        assert!(!should_retry_with_elevation(
+            "ssh",
+            255,
+            "Permission denied (publickey,password)."
+        ));
     }
 
     #[test]
@@ -1033,6 +1322,9 @@ mod tests {
         assert!(command.contains("https://nodejs.org/dist/index.json"));
         assert!(command.contains("win-x64-msi"));
         assert!(command.contains("msiexec.exe"));
+        assert!(command.contains("installer download complete"));
+        assert!(command.contains("execution finished with exit code"));
+        assert!(command.contains("Verifying Node.js installation"));
     }
 
     #[test]
@@ -1046,6 +1338,9 @@ mod tests {
         assert!(command.contains("64-bit"));
         assert!(command.contains("/VERYSILENT"));
         assert!(command.contains("/SP-"));
+        assert!(command.contains("installer download complete"));
+        assert!(command.contains("execution finished with exit code"));
+        assert!(command.contains("Verifying Git installation"));
     }
 
     #[test]
@@ -1065,5 +1360,41 @@ mod tests {
             "v{}.9.9",
             WINDOWS_NODE_MIN_MAJOR - 1
         )));
+    }
+
+    #[test]
+    fn poll_windows_installation_waits_for_delayed_success() {
+        let mut attempts = 0;
+        let result = poll_windows_installation(Duration::from_millis(2500), || {
+            attempts += 1;
+            if attempts < 3 {
+                WindowsInstallVerification::MissingExecutable
+            } else {
+                WindowsInstallVerification::Verified {
+                    path: PathBuf::from("C:\\node.exe"),
+                    version: "v22.0.0".into(),
+                }
+            }
+        });
+
+        assert!(matches!(
+            result,
+            WindowsInstallVerification::Verified { version, .. } if version == "v22.0.0"
+        ));
+    }
+
+    #[test]
+    fn poll_windows_installation_returns_last_failure_after_timeout() {
+        let result = poll_windows_installation(Duration::from_millis(0), || {
+            WindowsInstallVerification::CommandFailed {
+                path: PathBuf::from("C:\\Git\\cmd\\git.exe"),
+                details: "access denied".into(),
+            }
+        });
+
+        assert!(matches!(
+            result,
+            WindowsInstallVerification::CommandFailed { details, .. } if details == "access denied"
+        ));
     }
 }

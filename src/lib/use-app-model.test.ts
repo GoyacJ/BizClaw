@@ -223,7 +223,7 @@ describe('useAppModel', () => {
     expect(model.bizclawUpdateActionLabel.value).toBe('已加载当前版本')
   })
 
-  it('hydrates agent and skill management state on mount', async () => {
+  it('loads agent and skill management state lazily when each section is opened', async () => {
     apiMocks.detectEnvironment.mockResolvedValue(createSnapshot())
     apiMocks.streamLogs.mockResolvedValue([])
     apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
@@ -299,15 +299,32 @@ describe('useAppModel', () => {
 
     await flushPromises()
 
+    expect(apiMocks.listOpenClawAgents).not.toHaveBeenCalled()
+    expect(apiMocks.listOpenClawAgentBindings).not.toHaveBeenCalled()
+    expect(apiMocks.listOpenClawSkills).not.toHaveBeenCalled()
+    expect(apiMocks.checkOpenClawSkills).not.toHaveBeenCalled()
+
+    model.activeSection.value = 'agent'
+    await flushPromises()
+
     expect(apiMocks.listOpenClawAgents).toHaveBeenCalledTimes(1)
     expect(apiMocks.listOpenClawAgentBindings).toHaveBeenCalledTimes(1)
     expect(apiMocks.listOpenClawAgentBindings).toHaveBeenCalledWith('main')
-    expect(apiMocks.listOpenClawSkills).toHaveBeenCalledTimes(1)
-    expect(apiMocks.checkOpenClawSkills).not.toHaveBeenCalled()
     expect(model.agentsState.agents.value[0]?.id).toBe('main')
     expect(model.agentsState.bindings.value[0]?.description).toContain('telegram')
+
+    model.activeSection.value = 'skill'
+    await flushPromises()
+
+    expect(apiMocks.listOpenClawSkills).toHaveBeenCalledTimes(1)
     expect(model.skillsState.inventory.value.skills[0]?.name).toBe('sonoscli')
     expect(model.skillsState.checkReport.value.summary.total).toBe(1)
+
+    model.activeSection.value = 'agent'
+    await flushPromises()
+
+    expect(apiMocks.listOpenClawAgents).toHaveBeenCalledTimes(1)
+    expect(apiMocks.listOpenClawSkills).toHaveBeenCalledTimes(1)
   })
 
   it('refreshes agent state after creating a new agent', async () => {
@@ -390,6 +407,9 @@ describe('useAppModel', () => {
     app.mount(host)
 
     await flushPromises()
+    model.activeSection.value = 'agent'
+    await flushPromises()
+
     await model.agentsState.createAgent({
       name: 'Ops',
       workspace: '/tmp/openclaw-ops',
@@ -408,6 +428,140 @@ describe('useAppModel', () => {
     expect(apiMocks.listOpenClawAgentBindings).toHaveBeenNthCalledWith(1, 'main')
     expect(apiMocks.listOpenClawAgentBindings).toHaveBeenNthCalledWith(2, 'ops')
     expect(model.agentsState.agents.value).toHaveLength(2)
+  })
+
+  it('keeps agent mutations responsive while the revalidation refresh continues in the background', async () => {
+    apiMocks.detectEnvironment.mockResolvedValue(createSnapshot())
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    let resolveRevalidation!: (agents: Array<{
+      id: string
+      name: string
+      identityName: string
+      identityEmoji: string
+      identitySource: 'identity' | 'config'
+      workspace: string
+      agentDir: string
+      model: string
+      bindings: number
+      isDefault: boolean
+      routes: string[]
+    }>) => void
+    const pendingRevalidation = new Promise<Array<{
+      id: string
+      name: string
+      identityName: string
+      identityEmoji: string
+      identitySource: 'identity' | 'config'
+      workspace: string
+      agentDir: string
+      model: string
+      bindings: number
+      isDefault: boolean
+      routes: string[]
+    }>>((resolve) => {
+      resolveRevalidation = resolve
+    })
+    apiMocks.listOpenClawAgents
+      .mockResolvedValueOnce([
+        {
+          id: 'main',
+          name: 'Main',
+          identityName: '霸天',
+          identityEmoji: '🐯',
+          identitySource: 'identity',
+          workspace: '/Users/goya/.openclaw/workspace',
+          agentDir: '/Users/goya/.openclaw/agents/main/agent',
+          model: 'minimax-cn/MiniMax-M2.5',
+          bindings: 1,
+          isDefault: true,
+          routes: ['default (no explicit rules)'],
+        },
+      ])
+      .mockReturnValueOnce(pendingRevalidation)
+    apiMocks.listOpenClawAgentBindings.mockResolvedValue([])
+    apiMocks.listOpenClawSkills.mockResolvedValue({
+      workspaceDir: '/Users/goya/.openclaw/workspace',
+      managedSkillsDir: '/Users/goya/.openclaw/skills',
+      skills: [],
+    })
+    apiMocks.createOpenClawAgent.mockResolvedValue({
+      agentId: 'ops',
+    })
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+    model.activeSection.value = 'agent'
+    await flushPromises()
+
+    let settled = false
+    const createPromise = model.agentsState.createAgent({
+      name: 'Ops',
+      workspace: '/tmp/openclaw-ops',
+      model: 'minimax-cn/MiniMax-M2.5',
+      bindings: [],
+    }).then(() => {
+      settled = true
+    })
+
+    await Promise.resolve()
+    await nextTick()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(settled).toBe(true)
+    expect(apiMocks.listOpenClawAgents).toHaveBeenCalledTimes(2)
+
+    const completeAgentRevalidation = resolveRevalidation
+    completeAgentRevalidation([
+      {
+        id: 'main',
+        name: 'Main',
+        identityName: '霸天',
+        identityEmoji: '🐯',
+        identitySource: 'identity',
+        workspace: '/Users/goya/.openclaw/workspace',
+        agentDir: '/Users/goya/.openclaw/agents/main/agent',
+        model: 'minimax-cn/MiniMax-M2.5',
+        bindings: 1,
+        isDefault: true,
+        routes: ['default (no explicit rules)'],
+      },
+      {
+        id: 'ops',
+        name: 'Ops',
+        identityName: '值班',
+        identityEmoji: '🛠',
+        identitySource: 'config',
+        workspace: '/tmp/openclaw-ops',
+        agentDir: '/Users/goya/.openclaw/agents/ops/agent',
+        model: 'minimax-cn/MiniMax-M2.5',
+        bindings: 0,
+        isDefault: false,
+        routes: [],
+      },
+    ])
+    await createPromise
+    await flushPromises()
   })
 
   it('loads agent bindings lazily and does not refetch the same agent twice', async () => {
@@ -479,6 +633,8 @@ describe('useAppModel', () => {
     app = createApp(TestHarness)
     app.mount(host)
 
+    await flushPromises()
+    model.activeSection.value = 'agent'
     await flushPromises()
 
     await model.agentsState.selectAgent('ops')
@@ -609,6 +765,8 @@ describe('useAppModel', () => {
     app.mount(host)
 
     await flushPromises()
+    model.activeSection.value = 'skill'
+    await flushPromises()
 
     await model.skillsState.selectSkill('coding-agent')
     await flushPromises()
@@ -729,6 +887,8 @@ describe('useAppModel', () => {
     app.mount(host)
 
     await flushPromises()
+    model.activeSection.value = 'skill'
+    await flushPromises()
 
     await model.skillsState.installSkill({
       slug: 'calendar',
@@ -743,6 +903,186 @@ describe('useAppModel', () => {
     expect(apiMocks.listOpenClawSkills).toHaveBeenCalledTimes(2)
     expect(model.skillsState.selectedSkillName.value).toBe('calendar')
     expect(model.skillsState.selectedSkillInfo.value?.name).toBe('calendar')
+  })
+
+  it('keeps skill install mutations responsive while the inventory refresh continues in the background', async () => {
+    apiMocks.detectEnvironment.mockResolvedValue(createSnapshot())
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    let resolveRevalidation!: (inventory: {
+      workspaceDir: string
+      managedSkillsDir: string
+      skills: Array<{
+        name: string
+        description: string
+        eligible: boolean
+        disabled: boolean
+        blockedByAllowlist: boolean
+        source: 'openclaw-workspace' | 'openclaw-bundled' | 'user-managed' | 'other'
+        bundled: boolean
+        locationKind: 'workspaceLocal' | 'sharedLocal' | 'bundled' | 'external'
+        canDelete: boolean
+        missing: {
+          bins: string[]
+          anyBins: string[]
+          env: string[]
+          config: string[]
+          os: string[]
+        }
+      }>
+    }) => void
+    const pendingRevalidation = new Promise<{
+      workspaceDir: string
+      managedSkillsDir: string
+      skills: Array<{
+        name: string
+        description: string
+        eligible: boolean
+        disabled: boolean
+        blockedByAllowlist: boolean
+        source: 'openclaw-workspace' | 'openclaw-bundled' | 'user-managed' | 'other'
+        bundled: boolean
+        locationKind: 'workspaceLocal' | 'sharedLocal' | 'bundled' | 'external'
+        canDelete: boolean
+        missing: {
+          bins: string[]
+          anyBins: string[]
+          env: string[]
+          config: string[]
+          os: string[]
+        }
+      }>
+    }>((resolve) => {
+      resolveRevalidation = resolve
+    })
+    apiMocks.listOpenClawAgents.mockResolvedValue([
+      {
+        id: 'main',
+        name: 'Main',
+        identityName: '霸天',
+        identityEmoji: '🐯',
+        identitySource: 'identity',
+        workspace: '/Users/goya/.openclaw/workspace',
+        agentDir: '/Users/goya/.openclaw/agents/main/agent',
+        model: 'minimax-cn/MiniMax-M2.5',
+        bindings: 0,
+        isDefault: true,
+        routes: [],
+      },
+    ])
+    apiMocks.listOpenClawAgentBindings.mockResolvedValue([])
+    apiMocks.listOpenClawSkills
+      .mockResolvedValueOnce({
+        workspaceDir: '/Users/goya/.openclaw/workspace',
+        managedSkillsDir: '/Users/goya/.openclaw/skills',
+        skills: [],
+      })
+      .mockReturnValueOnce(pendingRevalidation)
+    apiMocks.installClawHubSkill.mockResolvedValue({
+      skillName: 'calendar',
+      slug: 'calendar',
+      location: 'workspaceLocal',
+    })
+    apiMocks.getOpenClawSkillInfo.mockResolvedValue({
+      name: 'calendar',
+      description: 'Calendar utilities.',
+      source: 'openclaw-workspace',
+      bundled: false,
+      locationKind: 'workspaceLocal',
+      canDelete: true,
+      filePath: '/Users/goya/.openclaw/workspace/skills/calendar/SKILL.md',
+      baseDir: '/Users/goya/.openclaw/workspace/skills/calendar',
+      skillKey: 'calendar',
+      homepage: null,
+      always: false,
+      disabled: false,
+      blockedByAllowlist: false,
+      eligible: true,
+      requirements: {
+        bins: [],
+        anyBins: [],
+        env: [],
+        config: [],
+        os: [],
+      },
+      missing: {
+        bins: [],
+        anyBins: [],
+        env: [],
+        config: [],
+        os: [],
+      },
+      configChecks: [],
+      install: [],
+    })
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+    model.activeSection.value = 'skill'
+    await flushPromises()
+
+    let settled = false
+    const installPromise = model.skillsState.installSkill({
+      slug: 'calendar',
+      location: 'workspaceLocal',
+    }).then(() => {
+      settled = true
+    })
+
+    await Promise.resolve()
+    await nextTick()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(settled).toBe(true)
+    expect(apiMocks.listOpenClawSkills).toHaveBeenCalledTimes(2)
+
+    const completeSkillRevalidation = resolveRevalidation
+    completeSkillRevalidation({
+      workspaceDir: '/Users/goya/.openclaw/workspace',
+      managedSkillsDir: '/Users/goya/.openclaw/skills',
+      skills: [
+        {
+          name: 'calendar',
+          description: 'Calendar utilities.',
+          eligible: true,
+          disabled: false,
+          blockedByAllowlist: false,
+          source: 'openclaw-workspace',
+          bundled: false,
+          locationKind: 'workspaceLocal',
+          canDelete: true,
+          missing: {
+            bins: [],
+            anyBins: [],
+            env: [],
+            config: [],
+            os: [],
+          },
+        },
+      ],
+    })
+    await installPromise
+    await flushPromises()
   })
 
   it('keeps save-and-test available while environment detection is still pending', async () => {
@@ -960,7 +1300,7 @@ describe('useAppModel', () => {
     expect(document.documentElement.dataset.theme).toBe('light')
   })
 
-  it('keeps english locale after saving and refreshing localized state', async () => {
+  it('keeps english locale after saving localized state without forcing another environment refresh', async () => {
     apiMocks.detectEnvironment
       .mockResolvedValueOnce(createSnapshot({
         uiPreferences: {
@@ -1011,7 +1351,7 @@ describe('useAppModel', () => {
 
     expect(model.uiPreferences.value.locale).toBe('en-US')
     expect(model.tokenStateLabel.value).toBe('Token saved')
-    expect(apiMocks.detectEnvironment).toHaveBeenCalledTimes(2)
+    expect(apiMocks.detectEnvironment).toHaveBeenCalledTimes(1)
     expect(apiMocks.streamLogs).toHaveBeenCalledTimes(1)
     expect(apiMocks.getOperationStatus).toHaveBeenCalledTimes(1)
     expect(apiMocks.getOperationEvents).toHaveBeenCalledTimes(1)
@@ -1090,6 +1430,138 @@ describe('useAppModel', () => {
     expect(apiMocks.streamLogs).toHaveBeenCalledTimes(1)
     expect(apiMocks.getOperationStatus).toHaveBeenCalledTimes(1)
     expect(apiMocks.getOperationEvents).toHaveBeenCalledTimes(1)
+  })
+
+  it('refreshes the environment only once after save-and-test finishes', async () => {
+    apiMocks.detectEnvironment
+      .mockResolvedValueOnce(createSnapshot({
+        savedSettings: null,
+      }))
+      .mockResolvedValue(createSnapshot({
+        savedSettings: {
+          companyProfile: {
+            sshHost: 'gateway.example.com',
+            sshUser: 'bizclaw',
+            localPort: 18889,
+            remoteBindHost: '127.0.0.1',
+            remoteBindPort: 18789,
+          },
+          userProfile: {
+            displayName: 'BizClaw',
+            autoConnect: true,
+            runInBackground: true,
+          },
+          targetProfile: {
+            wslDistro: 'Ubuntu',
+          },
+        },
+      }))
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.saveProfile.mockResolvedValue({
+      companyProfile: {
+        sshHost: 'gateway.example.com',
+        sshUser: 'bizclaw',
+        localPort: 18889,
+        remoteBindHost: '127.0.0.1',
+        remoteBindPort: 18789,
+      },
+      userProfile: {
+        displayName: 'BizClaw',
+        autoConnect: true,
+        runInBackground: true,
+      },
+      targetProfile: {
+        wslDistro: 'Ubuntu',
+      },
+    })
+    apiMocks.testConnection.mockResolvedValue({
+      success: true,
+      step: 'gatewayProbe',
+      summary: 'Connection is ready.',
+      stdout: 'ok',
+      stderr: '',
+    })
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+    await model.saveAndTest()
+    await flushPromises()
+
+    expect(apiMocks.saveProfile).toHaveBeenCalledTimes(1)
+    expect(apiMocks.testConnection).toHaveBeenCalledTimes(1)
+    expect(apiMocks.detectEnvironment).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops the hosted runtime without forcing a redundant environment refresh', async () => {
+    apiMocks.detectEnvironment.mockResolvedValue(createSnapshot({
+      runtimeStatus: {
+        phase: 'running',
+        sshConnected: true,
+        nodeConnected: true,
+        gatewayConnected: true,
+        lastError: null,
+      },
+    }))
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.stopRuntime.mockResolvedValue({
+      phase: 'configured',
+      sshConnected: false,
+      nodeConnected: false,
+      gatewayConnected: false,
+      lastError: null,
+    })
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+    await model.stopHostedRuntime()
+    await flushPromises()
+
+    expect(apiMocks.stopRuntime).toHaveBeenCalledTimes(1)
+    expect(apiMocks.streamLogs).toHaveBeenCalledTimes(2)
+    expect(apiMocks.detectEnvironment).toHaveBeenCalledTimes(1)
+    expect(model.environment.value?.runtimeStatus.phase).toBe('configured')
   })
 
   it('checks for BizClaw updates only when requested and exposes the available release', async () => {

@@ -22,18 +22,16 @@ use crate::{
     config_store::{JsonSettingsStore, JsonUiPreferencesStore},
     install::{
         command_available, compare_versions, current_platform, detect_wsl_status,
-        elevated_install_plan, install_plans_for_target,
-        macos_ensure_ssh_plan, read_latest_openclaw_version, read_openclaw_version,
-        resolve_runtime_target, target_command_available, update_plans_for_target,
-        should_retry_with_elevation,
+        elevated_install_plan, install_plans_for_target, macos_ensure_ssh_plan,
+        read_latest_openclaw_version, read_openclaw_version, resolve_runtime_target,
+        should_retry_with_elevation, target_command_available, update_plans_for_target,
         verify_windows_git_installation, verify_windows_node_installation,
-        verify_windows_ssh_installation,
-        windows_local_git_ready, windows_local_git_version, windows_local_node_ready,
-        windows_local_node_version, windows_local_openclaw_ready,
+        verify_windows_ssh_installation, windows_local_git_ready, windows_local_git_version,
+        windows_local_node_ready, windows_local_node_version, windows_local_openclaw_ready,
         windows_local_openclaw_version, windows_local_ssh_ready, windows_native_ensure_git_plan,
         windows_native_ensure_node_plan, windows_native_ensure_ssh_plan, wsl_bootstrap_plan,
-        wsl_ensure_ssh_plan, InstallPlan, Platform, WindowsInstallVerification,
-        MANUAL_INSTALL_URL, WINDOWS_NODE_MIN_MAJOR,
+        wsl_ensure_ssh_plan, InstallPlan, Platform, WindowsInstallVerification, MANUAL_INSTALL_URL,
+        WINDOWS_NODE_MIN_MAJOR,
     },
     openclaw_management,
     operation_supervisor::{
@@ -227,10 +225,7 @@ fn extract_installer_exit_code(result: &StreamedPlanResult) -> Option<String> {
         })
 }
 
-fn node_install_failure_follow_up(
-    locale: LocalePreference,
-    result: &StreamedPlanResult,
-) -> String {
+fn node_install_failure_follow_up(locale: LocalePreference, result: &StreamedPlanResult) -> String {
     if let Some(exit_code) = extract_installer_exit_code(result) {
         return locale_owned(
             locale,
@@ -247,10 +242,7 @@ fn node_install_failure_follow_up(
     .into()
 }
 
-fn git_install_failure_follow_up(
-    locale: LocalePreference,
-    result: &StreamedPlanResult,
-) -> String {
+fn git_install_failure_follow_up(locale: LocalePreference, result: &StreamedPlanResult) -> String {
     if let Some(exit_code) = extract_installer_exit_code(result) {
         return locale_owned(
             locale,
@@ -375,8 +367,14 @@ fn git_verification_follow_up(
         ),
         WindowsInstallVerification::VersionTooLow { version, .. } => locale_owned(
             locale,
-            format!("The Git installer ran, but the detected version still looks wrong: {}.", version),
-            format!("The Git installer ran, but the detected version still looks wrong: {}.", version),
+            format!(
+                "The Git installer ran, but the detected version still looks wrong: {}.",
+                version
+            ),
+            format!(
+                "The Git installer ran, but the detected version still looks wrong: {}.",
+                version
+            ),
         ),
         WindowsInstallVerification::Verified { .. } => locale_text(
             locale,
@@ -391,14 +389,31 @@ fn git_verification_follow_up(
 pub fn detect_environment(
     app: AppHandle,
     state: State<'_, AppState>,
+    force: Option<bool>,
 ) -> Result<EnvironmentSnapshot, String> {
+    let force_refresh = force.unwrap_or(false);
     match current_platform().map_err(err_to_string)? {
         Platform::Windows => {
-            let snapshot = detect_environment_quick(&app, &state).map_err(err_to_string)?;
-            spawn_windows_environment_probe(&app, &state);
-            Ok(snapshot)
+            if force_refresh {
+                refresh_environment_snapshot(&app, &state, false).map_err(err_to_string)
+            } else {
+                let snapshot = detect_environment_quick(&app, &state).map_err(err_to_string)?;
+                spawn_environment_probe(&app, &state, false);
+                Ok(snapshot)
+            }
         }
-        Platform::MacOs => refresh_environment_snapshot(&app, &state, false).map_err(err_to_string),
+        Platform::MacOs => {
+            if force_refresh {
+                return refresh_environment_snapshot(&app, &state, false).map_err(err_to_string);
+            }
+
+            if let Some(snapshot) = cached_environment_snapshot(&state) {
+                spawn_environment_probe(&app, &state, false);
+                Ok(snapshot)
+            } else {
+                refresh_environment_snapshot(&app, &state, false).map_err(err_to_string)
+            }
+        }
     }
 }
 
@@ -524,93 +539,103 @@ pub fn save_profile(
     .map_err(err_to_string)?;
 
     mark_configured(&state.runtime, &app);
-    let _ = refresh_environment_snapshot(&app, &state, false);
+    let _ = app_menu::refresh_status_menu_from_state(&app);
     Ok(settings)
 }
 
 #[tauri::command]
-pub fn list_openclaw_agents() -> Result<Vec<OpenClawAgentSummary>, String> {
-    openclaw_management::list_agents().map_err(err_to_string)
+pub async fn list_openclaw_agents() -> Result<Vec<OpenClawAgentSummary>, String> {
+    run_blocking_command(openclaw_management::list_agents).await
 }
 
 #[tauri::command]
-pub fn create_openclaw_agent(request: CreateOpenClawAgentRequest) -> Result<Value, String> {
-    openclaw_management::create_agent(&request).map_err(err_to_string)
+pub async fn create_openclaw_agent(request: CreateOpenClawAgentRequest) -> Result<Value, String> {
+    run_blocking_command(move || openclaw_management::create_agent(&request)).await
 }
 
 #[tauri::command]
-pub fn update_openclaw_agent_identity(
+pub async fn update_openclaw_agent_identity(
     request: UpdateOpenClawAgentIdentityRequest,
 ) -> Result<Value, String> {
-    openclaw_management::update_agent_identity(&request).map_err(err_to_string)
+    run_blocking_command(move || openclaw_management::update_agent_identity(&request)).await
 }
 
 #[tauri::command]
-pub fn delete_openclaw_agent(agent_id: String) -> Result<Value, String> {
-    openclaw_management::delete_agent(&agent_id).map_err(err_to_string)
+pub async fn delete_openclaw_agent(agent_id: String) -> Result<Value, String> {
+    run_blocking_command(move || openclaw_management::delete_agent(&agent_id)).await
 }
 
 #[tauri::command]
-pub fn list_openclaw_agent_bindings(
+pub async fn list_openclaw_agent_bindings(
     agent_id: Option<String>,
 ) -> Result<Vec<OpenClawAgentBinding>, String> {
-    openclaw_management::list_agent_bindings(agent_id.as_deref()).map_err(err_to_string)
+    run_blocking_command(move || openclaw_management::list_agent_bindings(agent_id.as_deref()))
+        .await
 }
 
 #[tauri::command]
-pub fn add_openclaw_agent_bindings(
+pub async fn add_openclaw_agent_bindings(
     agent_id: String,
     bindings: Vec<String>,
 ) -> Result<Value, String> {
-    openclaw_management::add_agent_bindings(&agent_id, &bindings).map_err(err_to_string)
+    run_blocking_command(move || openclaw_management::add_agent_bindings(&agent_id, &bindings))
+        .await
 }
 
 #[tauri::command]
-pub fn remove_openclaw_agent_bindings(
+pub async fn remove_openclaw_agent_bindings(
     agent_id: String,
     bindings: Option<Vec<String>>,
     remove_all: Option<bool>,
 ) -> Result<Value, String> {
     let bindings = bindings.unwrap_or_default();
-    openclaw_management::remove_agent_bindings(&agent_id, &bindings, remove_all.unwrap_or(false))
-        .map_err(err_to_string)
+    run_blocking_command(move || {
+        openclaw_management::remove_agent_bindings(
+            &agent_id,
+            &bindings,
+            remove_all.unwrap_or(false),
+        )
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn list_openclaw_skills() -> Result<OpenClawSkillInventory, String> {
-    openclaw_management::list_skills().map_err(err_to_string)
+pub async fn list_openclaw_skills() -> Result<OpenClawSkillInventory, String> {
+    run_blocking_command(openclaw_management::list_skills).await
 }
 
 #[tauri::command]
-pub fn check_openclaw_skills() -> Result<OpenClawSkillCheckReport, String> {
-    openclaw_management::check_skills().map_err(err_to_string)
+pub async fn check_openclaw_skills() -> Result<OpenClawSkillCheckReport, String> {
+    run_blocking_command(openclaw_management::check_skills).await
 }
 
 #[tauri::command]
-pub fn get_openclaw_skill_info(name: String) -> Result<OpenClawSkillInfo, String> {
-    openclaw_management::get_skill_info(&name).map_err(err_to_string)
+pub async fn get_openclaw_skill_info(name: String) -> Result<OpenClawSkillInfo, String> {
+    run_blocking_command(move || openclaw_management::get_skill_info(&name)).await
 }
 
 #[tauri::command]
-pub fn search_clawhub_skills(
+pub async fn search_clawhub_skills(
     request: SearchClawHubSkillsRequest,
 ) -> Result<Vec<ClawHubSkillSearchResult>, String> {
-    openclaw_management::search_clawhub_skills(&request).map_err(err_to_string)
+    run_blocking_command(move || openclaw_management::search_clawhub_skills(&request)).await
 }
 
 #[tauri::command]
-pub fn install_clawhub_skill(request: InstallClawHubSkillRequest) -> Result<Value, String> {
-    openclaw_management::install_clawhub_skill(&request).map_err(err_to_string)
+pub async fn install_clawhub_skill(request: InstallClawHubSkillRequest) -> Result<Value, String> {
+    run_blocking_command(move || openclaw_management::install_clawhub_skill(&request)).await
 }
 
 #[tauri::command]
-pub fn create_local_openclaw_skill(request: CreateLocalSkillRequest) -> Result<Value, String> {
-    openclaw_management::create_local_skill(&request).map_err(err_to_string)
+pub async fn create_local_openclaw_skill(
+    request: CreateLocalSkillRequest,
+) -> Result<Value, String> {
+    run_blocking_command(move || openclaw_management::create_local_skill(&request)).await
 }
 
 #[tauri::command]
-pub fn delete_local_openclaw_skill(name: String) -> Result<Value, String> {
-    openclaw_management::delete_local_skill(&name).map_err(err_to_string)
+pub async fn delete_local_openclaw_skill(name: String) -> Result<Value, String> {
+    run_blocking_command(move || openclaw_management::delete_local_skill(&name)).await
 }
 
 #[tauri::command]
@@ -767,6 +792,16 @@ pub fn stream_logs(state: State<'_, AppState>) -> Result<Vec<LogEntry>, String> 
     Ok(snapshot_logs(&state.runtime))
 }
 
+async fn run_blocking_command<T, F>(handler: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || handler().map_err(err_to_string))
+        .await
+        .map_err(err_to_string)?
+}
+
 fn detect_environment_inner(
     app: &AppHandle,
     runtime: &SharedRuntimeState,
@@ -844,10 +879,8 @@ fn detect_environment_quick(
         .map(|saved| saved.target_profile.clone())
         .unwrap_or_default();
     let token_state = inspect_token_state(token_store(app).and_then(|store| store.get_secret()));
-    let resolved = quick_windows_resolved_environment(
-        &target_profile,
-        &state.latest_openclaw_version_cache,
-    );
+    let resolved =
+        quick_windows_resolved_environment(&target_profile, &state.latest_openclaw_version_cache);
 
     Ok(build_environment_snapshot(
         env::consts::OS,
@@ -860,7 +893,19 @@ fn detect_environment_quick(
     ))
 }
 
-fn spawn_windows_environment_probe(app: &AppHandle, state: &State<'_, AppState>) {
+fn cached_environment_snapshot(state: &State<'_, AppState>) -> Option<EnvironmentSnapshot> {
+    state
+        .environment_cache
+        .lock()
+        .expect("environment cache mutex poisoned")
+        .clone()
+}
+
+fn spawn_environment_probe(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    include_remote_update_check: bool,
+) {
     if state
         .environment_probe_active
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -879,7 +924,7 @@ fn spawn_windows_environment_probe(app: &AppHandle, state: &State<'_, AppState>)
         let snapshot = detect_environment_inner(
             &app_handle,
             &runtime_state,
-            false,
+            include_remote_update_check,
             &latest_version_cache,
         );
 
@@ -993,11 +1038,7 @@ fn resolved_environment_from_windows_discovery(
         RuntimeTarget::MacNative => None,
     };
     let latest_openclaw_version = if include_remote_update_check {
-        read_latest_openclaw_version_cached(
-            latest_version_cache,
-            runtime_target,
-            target_profile,
-        )
+        read_latest_openclaw_version_cached(latest_version_cache, runtime_target, target_profile)
     } else {
         read_cached_latest_openclaw_version(latest_version_cache, runtime_target, target_profile)
             .flatten()
@@ -1978,7 +2019,8 @@ fn install_recommendation(
                 return if matches!(locale, LocalePreference::EnUs) {
                     "BizClaw is detecting local Windows and WSL OpenClaw environments in the background. Local Windows installation stays the default install target.".into()
                 } else {
-                    "BizClaw 正在后台检测 Windows 本机与 WSL 环境，默认仍优先安装到 Windows 本机。".into()
+                    "BizClaw 正在后台检测 Windows 本机与 WSL 环境，默认仍优先安装到 Windows 本机。"
+                        .into()
                 };
             }
 
@@ -2525,7 +2567,8 @@ fn run_install_or_update(
             });
         }
         if matches!(runtime_target, RuntimeTarget::WindowsNative) {
-            let verification = verify_windows_ssh_installation(WINDOWS_INSTALL_VERIFICATION_TIMEOUT);
+            let verification =
+                verify_windows_ssh_installation(WINDOWS_INSTALL_VERIFICATION_TIMEOUT);
             if !matches!(verification, WindowsInstallVerification::Verified { .. }) {
                 let remediation = remediation_for_failed_plan(request.allow_elevation, &ssh_result);
                 return Ok(OperationResult {
@@ -2642,8 +2685,12 @@ fn run_install_or_update(
                 remediation,
             });
         }
-        let node_verification = verify_windows_node_installation(WINDOWS_INSTALL_VERIFICATION_TIMEOUT);
-        if !matches!(node_verification, WindowsInstallVerification::Verified { .. }) {
+        let node_verification =
+            verify_windows_node_installation(WINDOWS_INSTALL_VERIFICATION_TIMEOUT);
+        if !matches!(
+            node_verification,
+            WindowsInstallVerification::Verified { .. }
+        ) {
             let remediation = remediation_for_failed_plan(request.allow_elevation, &node_result);
             return Ok(OperationResult {
                 kind,
@@ -2772,8 +2819,12 @@ fn run_install_or_update(
                 remediation,
             });
         }
-        let git_verification = verify_windows_git_installation(WINDOWS_INSTALL_VERIFICATION_TIMEOUT);
-        if !matches!(git_verification, WindowsInstallVerification::Verified { .. }) {
+        let git_verification =
+            verify_windows_git_installation(WINDOWS_INSTALL_VERIFICATION_TIMEOUT);
+        if !matches!(
+            git_verification,
+            WindowsInstallVerification::Verified { .. }
+        ) {
             let remediation = remediation_for_failed_plan(request.allow_elevation, &git_result);
             return Ok(OperationResult {
                 kind,
@@ -3109,9 +3160,7 @@ fn should_skip_install_for_target(
     }
 
     match runtime_target {
-        RuntimeTarget::MacNative | RuntimeTarget::WindowsNative | RuntimeTarget::WindowsWsl => {
-            true
-        }
+        RuntimeTarget::MacNative | RuntimeTarget::WindowsNative | RuntimeTarget::WindowsWsl => true,
     }
 }
 
@@ -3366,11 +3415,8 @@ fn execute_plan_streaming(
     let status = exit_status.expect("operation exit status should be available");
     let exit_code = status.code().unwrap_or(-1);
     let success = status.success() && !cancelled;
-    let needs_elevation = should_retry_with_elevation(
-        elevation_command_name(plan),
-        exit_code,
-        &stderr_buffer,
-    );
+    let needs_elevation =
+        should_retry_with_elevation(elevation_command_name(plan), exit_code, &stderr_buffer);
     emit_operation_event(
         app,
         Some(operation_state),
@@ -3515,17 +3561,17 @@ mod tests {
         evaluate_gateway_probe, gateway_probe_failure_result,
         gateway_probe_failure_result_with_reason, inspect_token_state, load_saved_token,
         persist_profile_atomic, should_skip_install_for_target, should_treat_plan_as_success,
-        update_available_from_versions,
-        window_background_color_for_theme, window_theme_for_preference,
-        with_cached_latest_openclaw_version, CapturedOutput, ResolvedEnvironment, RuntimePhase,
-        RuntimeStatus, SettingsStoreAccess, TokenState,
+        update_available_from_versions, window_background_color_for_theme,
+        window_theme_for_preference, with_cached_latest_openclaw_version, CapturedOutput,
+        ResolvedEnvironment, RuntimePhase, RuntimeStatus, SettingsStoreAccess, TokenState,
     };
     use crate::{
         secret_store::{MemorySecretStore, SecretStore},
         types::{
             CompanyProfile, ConnectionTestStep, LocalePreference, OperationKind, PersistedSettings,
-            RuntimeTarget, TargetProfile, TokenStatus, UiPreferences, UserProfile, WindowsDiscovery,
-            WindowsDiscoveryPhase, WindowsNativeDiscovery, WindowsWslDiscovery, WslStatus,
+            RuntimeTarget, TargetProfile, TokenStatus, UiPreferences, UserProfile,
+            WindowsDiscovery, WindowsDiscoveryPhase, WindowsNativeDiscovery, WindowsWslDiscovery,
+            WslStatus,
         },
     };
 
@@ -3775,8 +3821,14 @@ mod tests {
             windows_discovery: None,
         };
 
-        assert!(should_skip_install_for_target(&native_resolved, RuntimeTarget::WindowsNative));
-        assert!(should_skip_install_for_target(&wsl_resolved, RuntimeTarget::WindowsWsl));
+        assert!(should_skip_install_for_target(
+            &native_resolved,
+            RuntimeTarget::WindowsNative
+        ));
+        assert!(should_skip_install_for_target(
+            &wsl_resolved,
+            RuntimeTarget::WindowsWsl
+        ));
     }
 
     #[test]

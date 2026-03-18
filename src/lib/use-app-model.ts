@@ -1,4 +1,4 @@
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 
 import {
   checkForBizClawUpdate,
@@ -325,6 +325,8 @@ export function useAppModel() {
   const agentsLoading = ref(false)
   const agentMutationBusy = ref(false)
   const agentsError = ref<string | null>(null)
+  const agentsLoaded = ref(false)
+  const agentsStale = ref(false)
   const agentBindingsCache = shallowRef<Record<string, OpenClawAgentBinding[]>>({})
   const pendingAgentBindingsRequests = new Map<string, Promise<OpenClawAgentBinding[] | null>>()
   const skillsInventory = ref<OpenClawSkillInventory>(createEmptySkillInventory())
@@ -335,6 +337,8 @@ export function useAppModel() {
   const skillDetailLoading = ref(false)
   const skillMutationBusy = ref(false)
   const skillsError = ref<string | null>(null)
+  const skillsLoaded = ref(false)
+  const skillsStale = ref(false)
   const skillSearchResults = ref<ClawHubSkillSearchResult[]>([])
   const skillSearchBusy = ref(false)
   const skillInfoCache = shallowRef<Record<string, OpenClawSkillInfo>>({})
@@ -365,6 +369,10 @@ export function useAppModel() {
     || runtimeStartBusy.value
     || runtimeStopBusy.value
   ))
+  const agentsInitialLoadPending = computed(() => !agentsLoaded.value && agentsLoading.value)
+  const agentsRefreshing = computed(() => agentsLoaded.value && agentsLoading.value)
+  const skillsInitialLoadPending = computed(() => !skillsLoaded.value && skillsLoading.value)
+  const skillsRefreshing = computed(() => skillsLoaded.value && skillsLoading.value)
   const canSaveProfile = computed(() => (
     companyProfileComplete.value
     && displayNameReady.value
@@ -728,8 +736,7 @@ export function useAppModel() {
     }
   }
 
-  async function refreshEnvironment() {
-    const snapshot = await detectEnvironment()
+  function applyEnvironmentSnapshot(snapshot: EnvironmentSnapshot) {
     environment.value = snapshot
     syncUiPreferences(snapshot.uiPreferences)
     if (!hydratedFromSaved.value && snapshot.savedSettings) {
@@ -741,6 +748,11 @@ export function useAppModel() {
       Object.assign(targetProfile, snapshot.savedSettings.targetProfile)
       hydratedFromSaved.value = true
     }
+  }
+
+  async function refreshEnvironment(options: { force?: boolean } = {}) {
+    const snapshot = await detectEnvironment(options.force)
+    applyEnvironmentSnapshot(snapshot)
   }
 
   async function refreshLogs() {
@@ -843,18 +855,22 @@ export function useAppModel() {
     )
   }
 
-  async function refreshAgents() {
+  async function refreshAgents(options: { ensureSelectedBindings?: boolean } = {}) {
     return withSectionBusy(agentsLoading, agentsError, async () => {
       const nextAgents = await listOpenClawAgents()
       openClawAgents.value = nextAgents
       pruneAgentBindingsCache(nextAgents)
       syncSelectedAgent(nextAgents)
+      agentsLoaded.value = true
+      agentsStale.value = false
       if (!selectedAgentId.value) {
         openClawAgentBindings.value = []
         return nextAgents
       }
 
-      await ensureAgentBindingsLoaded(selectedAgentId.value)
+      if (options.ensureSelectedBindings !== false) {
+        await ensureAgentBindingsLoaded(selectedAgentId.value)
+      }
       return nextAgents
     })
   }
@@ -881,11 +897,15 @@ export function useAppModel() {
       return
     }
 
-    await refreshAgents()
     const nextAgentId = typeof result.agentId === 'string' ? result.agentId : request.name.trim().toLowerCase().replace(/\s+/g, '-')
     if (nextAgentId) {
-      await selectAgent(nextAgentId)
+      selectedAgentId.value = nextAgentId
+      openClawAgentBindings.value = []
+      removeAgentBindingsCache(nextAgentId)
     }
+
+    agentsStale.value = true
+    void refreshAgents()
   }
 
   async function updateAgentIdentity(request: UpdateOpenClawAgentIdentityRequest) {
@@ -894,8 +914,18 @@ export function useAppModel() {
       return
     }
 
-    await refreshAgents()
-    await selectAgent(request.agentId)
+    openClawAgents.value = openClawAgents.value.map((agent) => (
+      agent.id === request.agentId
+        ? {
+            ...agent,
+            identityName: request.name,
+            identityEmoji: request.emoji,
+          }
+        : agent
+    ))
+    selectedAgentId.value = request.agentId
+    agentsStale.value = true
+    void refreshAgents()
   }
 
   async function deleteAgent(agentId: string) {
@@ -909,7 +939,10 @@ export function useAppModel() {
       selectedAgentId.value = null
       openClawAgentBindings.value = []
     }
-    await refreshAgents()
+    openClawAgents.value = openClawAgents.value.filter((agent) => agent.id !== agentId)
+    syncSelectedAgent(openClawAgents.value)
+    agentsStale.value = true
+    void refreshAgents()
   }
 
   async function addAgentBindings(agentId: string, bindings: string[]) {
@@ -924,7 +957,9 @@ export function useAppModel() {
 
     removeAgentBindingsCache(agentId)
     selectedAgentId.value = agentId
-    await refreshAgents()
+    openClawAgentBindings.value = []
+    agentsStale.value = true
+    void refreshAgents()
   }
 
   async function removeAgentBindings(agentId: string, bindings: string[]) {
@@ -939,7 +974,9 @@ export function useAppModel() {
 
     removeAgentBindingsCache(agentId)
     selectedAgentId.value = agentId
-    await refreshAgents()
+    openClawAgentBindings.value = []
+    agentsStale.value = true
+    void refreshAgents()
   }
 
   async function clearAgentBindings(agentId: string) {
@@ -950,16 +987,23 @@ export function useAppModel() {
 
     removeAgentBindingsCache(agentId)
     selectedAgentId.value = agentId
-    await refreshAgents()
+    openClawAgentBindings.value = []
+    agentsStale.value = true
+    void refreshAgents()
   }
 
-  async function refreshSkills() {
+  async function refreshSkills(options: { ensureSelectedSkillInfo?: boolean } = {}) {
     return withSectionBusy(skillsLoading, skillsError, async () => {
       const nextInventory = await listOpenClawSkills()
       skillsInventory.value = nextInventory
       skillsCheckReport.value = buildSkillCheckReport(nextInventory)
       pruneSkillInfoCache(nextInventory.skills)
       syncSelectedSkill(nextInventory.skills)
+      skillsLoaded.value = true
+      skillsStale.value = false
+      if (options.ensureSelectedSkillInfo && selectedSkillName.value) {
+        await selectSkill(selectedSkillName.value)
+      }
       return nextInventory
     })
   }
@@ -1021,9 +1065,11 @@ export function useAppModel() {
     }
 
     skillSearchResults.value = []
-    await refreshSkills()
     const nextSkillName = typeof result.skillName === 'string' ? result.skillName : request.slug
-    await selectSkill(nextSkillName)
+    selectedSkillName.value = nextSkillName
+    selectedSkillInfo.value = skillInfoCache.value[nextSkillName] ?? null
+    skillsStale.value = true
+    void refreshSkills({ ensureSelectedSkillInfo: true })
   }
 
   async function deleteLocalSkill(name: string) {
@@ -1037,14 +1083,15 @@ export function useAppModel() {
       selectedSkillName.value = null
       selectedSkillInfo.value = null
     }
-    await refreshSkills()
-  }
-
-  async function refreshManagementState() {
-    await Promise.all([
-      refreshAgents(),
-      refreshSkills(),
-    ])
+    const nextSkills = skillsInventory.value.skills.filter((skill) => skill.name !== name)
+    skillsInventory.value = {
+      ...skillsInventory.value,
+      skills: nextSkills,
+    }
+    skillsCheckReport.value = buildSkillCheckReport(skillsInventory.value)
+    syncSelectedSkill(nextSkills)
+    skillsStale.value = true
+    void refreshSkills()
   }
 
   async function syncBizClawCurrentVersion() {
@@ -1592,7 +1639,7 @@ export function useAppModel() {
       return
     }
 
-    await refreshEnvironment()
+    await refreshEnvironment({ force: true })
   }
 
   async function saveAndTest() {
@@ -1605,7 +1652,6 @@ export function useAppModel() {
     clearActionError('save')
     openConnectionTestModal()
     await nextTick()
-    void refreshEnvironment()
 
     connectionTestBusy.value = true
     lastError.value = null
@@ -1627,7 +1673,7 @@ export function useAppModel() {
       connectionTestBusy.value = false
     }
 
-    await refreshEnvironment()
+    await refreshEnvironment({ force: true })
   }
 
   async function startHostedRuntime() {
@@ -1685,8 +1731,6 @@ export function useAppModel() {
     if (!result) {
       return
     }
-
-    await refreshEnvironment()
   }
 
   let disposed = false
@@ -1707,7 +1751,7 @@ export function useAppModel() {
         }
       }),
       onEnvironmentSnapshot((snapshot) => {
-        environment.value = snapshot
+        applyEnvironmentSnapshot(snapshot)
       }),
       onOperationStatus((snapshot) => {
         applyOperationTaskSnapshot(snapshot)
@@ -1736,8 +1780,16 @@ export function useAppModel() {
   onMounted(() => {
     void initializeSubscriptions()
     void refreshOperationalState({ includeLogs: true })
-    void refreshManagementState()
     void syncBizClawCurrentVersion()
+  })
+
+  watch(activeSection, (section) => {
+    if (section === 'agent' && !agentsLoaded.value && !agentsLoading.value) {
+      void refreshAgents()
+    }
+    if (section === 'skill' && !skillsLoaded.value && !skillsLoading.value) {
+      void refreshSkills()
+    }
   })
 
   onBeforeUnmount(() => {
@@ -1768,9 +1820,6 @@ export function useAppModel() {
     }
 
     syncUiPreferences(saved)
-    if (patch.locale && patch.locale !== previous.locale) {
-      await refreshEnvironment()
-    }
   }
 
   async function setTheme(theme: ThemePreference) {
@@ -1803,6 +1852,10 @@ export function useAppModel() {
     bindingsLoading: agentBindingsLoading,
     selectedAgentId,
     loading: agentsLoading,
+    loaded: agentsLoaded,
+    initialLoadPending: agentsInitialLoadPending,
+    refreshing: agentsRefreshing,
+    stale: agentsStale,
     mutationBusy: agentMutationBusy,
     error: agentsError,
     refreshAgents,
@@ -1822,6 +1875,10 @@ export function useAppModel() {
     selectedSkillName,
     selectedSkillInfo,
     loading: skillsLoading,
+    loaded: skillsLoaded,
+    initialLoadPending: skillsInitialLoadPending,
+    refreshing: skillsRefreshing,
+    stale: skillsStale,
     searchBusy: skillSearchBusy,
     detailLoading: skillDetailLoading,
     mutationBusy: skillMutationBusy,

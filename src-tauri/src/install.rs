@@ -33,9 +33,15 @@ const WINDOWS_INSTALL_VERIFICATION_POLL_INTERVAL: Duration = Duration::from_secs
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WindowsInstallVerification {
-    Verified { path: PathBuf, version: String },
+    Verified {
+        path: PathBuf,
+        version: String,
+    },
     MissingExecutable,
-    CommandFailed { path: PathBuf, details: String },
+    CommandFailed {
+        path: PathBuf,
+        details: String,
+    },
     VersionTooLow {
         path: PathBuf,
         version: String,
@@ -124,38 +130,49 @@ pub fn windows_local_git_version() -> Option<String> {
 }
 
 pub fn verify_windows_node_installation(timeout: Duration) -> WindowsInstallVerification {
-    verify_windows_installation(timeout, windows_node_executable_candidates, "--version", |path, version| {
-        if node_version_satisfies_minimum(version) {
-            WindowsInstallVerification::Verified {
-                path: path.to_path_buf(),
-                version: version.to_string(),
+    verify_windows_installation(
+        timeout,
+        windows_node_executable_candidates,
+        "--version",
+        |path, version| {
+            if node_version_satisfies_minimum(version) {
+                WindowsInstallVerification::Verified {
+                    path: path.to_path_buf(),
+                    version: version.to_string(),
+                }
+            } else {
+                WindowsInstallVerification::VersionTooLow {
+                    path: path.to_path_buf(),
+                    version: version.to_string(),
+                    minimum_major: WINDOWS_NODE_MIN_MAJOR,
+                }
             }
-        } else {
-            WindowsInstallVerification::VersionTooLow {
-                path: path.to_path_buf(),
-                version: version.to_string(),
-                minimum_major: WINDOWS_NODE_MIN_MAJOR,
-            }
-        }
-    })
+        },
+    )
 }
 
 pub fn verify_windows_git_installation(timeout: Duration) -> WindowsInstallVerification {
-    verify_windows_installation(timeout, windows_git_executable_candidates, "--version", |path, version| {
-        WindowsInstallVerification::Verified {
+    verify_windows_installation(
+        timeout,
+        windows_git_executable_candidates,
+        "--version",
+        |path, version| WindowsInstallVerification::Verified {
             path: path.to_path_buf(),
             version: version.to_string(),
-        }
-    })
+        },
+    )
 }
 
 pub fn verify_windows_ssh_installation(timeout: Duration) -> WindowsInstallVerification {
-    verify_windows_installation(timeout, windows_ssh_executable_candidates, "-V", |path, version| {
-        WindowsInstallVerification::Verified {
+    verify_windows_installation(
+        timeout,
+        windows_ssh_executable_candidates,
+        "-V",
+        |path, version| WindowsInstallVerification::Verified {
             path: path.to_path_buf(),
             version: version.to_string(),
-        }
-    })
+        },
+    )
 }
 
 pub fn windows_local_openclaw_ready() -> bool {
@@ -533,11 +550,9 @@ pub fn read_openclaw_version(
     target_profile: &TargetProfile,
 ) -> Option<String> {
     read_first_non_empty_line(match target {
-        RuntimeTarget::MacNative => {
-            new_command("openclaw", &["--version".into()])
-                .output()
-                .ok()?
-        }
+        RuntimeTarget::MacNative => new_command("openclaw", &["--version".into()])
+            .output()
+            .ok()?,
         RuntimeTarget::WindowsNative => {
             let openclaw_program = windows_openclaw_executable_path()?;
             new_command(&openclaw_program.to_string_lossy(), &["--version".into()])
@@ -637,9 +652,10 @@ pub fn should_retry_with_elevation(command: &str, exit_code: i32, stderr: &str) 
     }
 
     if command == "git" {
-        return false == (normalized.contains("repository not found")
-            || normalized.contains("403")
-            || is_git_remote_permission_denied);
+        return false
+            == (normalized.contains("repository not found")
+                || normalized.contains("403")
+                || is_git_remote_permission_denied);
     }
 
     if command == "ssh" {
@@ -866,8 +882,7 @@ fn poll_windows_installation(
             WindowsInstallVerification::Verified { .. }
             | WindowsInstallVerification::VersionTooLow { .. } => return last_result,
             WindowsInstallVerification::MissingExecutable
-            | WindowsInstallVerification::CommandFailed { .. } => {
-            }
+            | WindowsInstallVerification::CommandFailed { .. } => {}
         }
 
         if started_at.elapsed() >= timeout {
@@ -884,12 +899,9 @@ fn poll_windows_installation(
 }
 
 fn read_command_version(program: &Path, version_arg: &str) -> Result<String, String> {
-    let output = new_command(
-        &program.to_string_lossy(),
-        &[version_arg.to_string()],
-    )
-    .output()
-    .map_err(|error| error.to_string())?;
+    let output = new_command(&program.to_string_lossy(), &[version_arg.to_string()])
+        .output()
+        .map_err(|error| error.to_string())?;
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1106,8 +1118,7 @@ mod tests {
     use super::{
         compare_versions, default_install_target, fallback_install_plans, install_plans_for_target,
         macos_ensure_ssh_plan, official_install_plan, poll_windows_installation,
-        preferred_windows_runtime_target, should_retry_with_elevation,
-        update_plans_for_target,
+        preferred_windows_runtime_target, should_retry_with_elevation, update_plans_for_target,
         windows_native_ensure_git_plan, windows_native_ensure_node_plan,
         windows_native_ensure_ssh_plan, Platform, WindowsInstallVerification,
         WINDOWS_GIT_VERSION,
@@ -1237,11 +1248,7 @@ mod tests {
 
     #[test]
     fn does_not_retry_when_exit_code_is_zero() {
-        assert!(!should_retry_with_elevation(
-            "node",
-            0,
-            "access denied"
-        ));
+        assert!(!should_retry_with_elevation("node", 0, "access denied"));
     }
 
     #[test]

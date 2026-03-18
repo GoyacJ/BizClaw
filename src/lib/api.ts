@@ -131,9 +131,9 @@ function tauriListen<T>(
   return listen<T>(eventName, (event) => handler(event.payload))
 }
 
-export const detectEnvironment = () => (
+export const detectEnvironment = (force = false) => (
   canInvokeTauri()
-    ? tauriInvoke<EnvironmentSnapshot>('detect_environment')
+    ? tauriInvoke<EnvironmentSnapshot>('detect_environment', force ? { force } : undefined)
     : Promise.resolve({
       ...browserEnvironmentSnapshot,
       uiPreferences: readBrowserUiPreferences(),

@@ -710,9 +710,11 @@ fn extract_json_value(text: &str) -> Result<Value> {
             continue;
         }
         let candidate = &text[index..];
-        match serde_json::from_str::<Value>(candidate) {
-            Ok(value) => return Ok(value),
-            Err(error) => last_error = Some(error),
+        let mut stream = serde_json::Deserializer::from_str(candidate).into_iter::<Value>();
+        match stream.next() {
+            Some(Ok(value)) => return Ok(value),
+            Some(Err(error)) => last_error = Some(error),
+            None => continue,
         }
     }
 
@@ -885,6 +887,21 @@ mod tests {
 
         let value = extract_json_value(payload).expect("json payload should be extracted");
         assert_eq!(value["summary"]["total"].as_u64(), Some(2));
+    }
+
+    #[test]
+    fn extracts_json_payload_before_trailing_plugin_logs() {
+        let payload = r#"[
+  {
+    "id": "main"
+  }
+]
+[plugins] feishu_doc: Registered feishu_doc, feishu_app_scopes
+[plugins] feishu_chat: Registered feishu_chat tool
+"#;
+
+        let value = extract_json_value(payload).expect("json payload should be extracted");
+        assert_eq!(value[0]["id"].as_str(), Some("main"));
     }
 
     #[test]

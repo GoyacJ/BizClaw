@@ -859,7 +859,8 @@ mod tests {
         let path = windows_openssh_msi_path();
 
         if let Some(path) = path {
-            assert!(path.ends_with("scripts\\OpenSSH-Win64-v10.0.0.0.msi"));
+            let normalized = path.to_string_lossy().replace('\\', "/");
+            assert!(normalized.ends_with("scripts/OpenSSH-Win64-v10.0.0.0.msi"));
         }
     }
 
@@ -879,7 +880,8 @@ mod tests {
         let path = windows_node_msi_path();
 
         if let Some(path) = path {
-            assert!(path.ends_with("scripts\\node-v24.14.0-x64.msi"));
+            let normalized = path.to_string_lossy().replace('\\', "/");
+            assert!(normalized.ends_with("scripts/node-v24.14.0-x64.msi"));
         }
     }
 

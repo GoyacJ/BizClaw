@@ -3133,7 +3133,7 @@ mod tests {
         assert_eq!(snapshot.ui_preferences.locale, LocalePreference::EnUs);
         assert_eq!(
             snapshot.install_recommendation,
-            "OpenClaw is not installed on Windows or WSL yet. Choose whether to install locally on Windows or let BizClaw prepare WSL Ubuntu first."
+            "OpenClaw is not installed on Windows or WSL yet. On Windows, BizClaw now recommends installing the local Windows runtime first."
         );
     }
 

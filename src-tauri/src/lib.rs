@@ -4,6 +4,7 @@ pub mod app_menu;
 pub mod commands;
 pub mod config_store;
 pub mod install;
+pub mod openclaw_management;
 pub mod operation_supervisor;
 pub mod process_exec;
 pub mod runtime;
@@ -67,6 +68,18 @@ pub fn run() {
             commands::open_manual_install,
             commands::open_support_url,
             commands::save_profile,
+            commands::list_openclaw_agents,
+            commands::create_openclaw_agent,
+            commands::update_openclaw_agent_identity,
+            commands::delete_openclaw_agent,
+            commands::list_openclaw_agent_bindings,
+            commands::add_openclaw_agent_bindings,
+            commands::remove_openclaw_agent_bindings,
+            commands::list_openclaw_skills,
+            commands::check_openclaw_skills,
+            commands::get_openclaw_skill_info,
+            commands::create_local_openclaw_skill,
+            commands::delete_local_openclaw_skill,
             commands::save_ui_preferences,
             commands::test_connection,
             commands::start_runtime,

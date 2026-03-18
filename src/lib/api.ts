@@ -5,13 +5,21 @@ import type {
   CompanyProfile,
   ConnectionTestEvent,
   ConnectionTestResult,
+  CreateLocalSkillRequest,
+  CreateOpenClawAgentRequest,
   EnvironmentSnapshot,
   InstallRequest,
   LogEntry,
+  OpenClawAgentBinding,
+  OpenClawAgentSummary,
+  OpenClawSkillCheckReport,
+  OpenClawSkillInfo,
+  OpenClawSkillInventory,
   OperationEvent,
   OperationTaskSnapshot,
   PersistedSettings,
   SupportUrlTarget,
+  UpdateOpenClawAgentIdentityRequest,
   UiPreferences,
   TargetProfile,
   RuntimeStatus,
@@ -183,6 +191,48 @@ export const saveProfile = (
     token,
     sshPassword,
   })
+
+export const listOpenClawAgents = () =>
+  tauriInvoke<OpenClawAgentSummary[]>('list_openclaw_agents')
+
+export const createOpenClawAgent = (request: CreateOpenClawAgentRequest) =>
+  tauriInvoke<Record<string, unknown>>('create_openclaw_agent', { request })
+
+export const updateOpenClawAgentIdentity = (request: UpdateOpenClawAgentIdentityRequest) =>
+  tauriInvoke<Record<string, unknown>>('update_openclaw_agent_identity', { request })
+
+export const deleteOpenClawAgent = (agentId: string) =>
+  tauriInvoke<Record<string, unknown>>('delete_openclaw_agent', { agentId })
+
+export const listOpenClawAgentBindings = (agentId?: string) =>
+  tauriInvoke<OpenClawAgentBinding[]>(
+    'list_openclaw_agent_bindings',
+    agentId ? { agentId } : undefined,
+  )
+
+export const addOpenClawAgentBindings = (agentId: string, bindings: string[]) =>
+  tauriInvoke<Record<string, unknown>>('add_openclaw_agent_bindings', { agentId, bindings })
+
+export const removeOpenClawAgentBindings = (agentId: string, bindings?: string[]) =>
+  tauriInvoke<Record<string, unknown>>(
+    'remove_openclaw_agent_bindings',
+    bindings ? { agentId, bindings } : { agentId, removeAll: true },
+  )
+
+export const listOpenClawSkills = () =>
+  tauriInvoke<OpenClawSkillInventory>('list_openclaw_skills')
+
+export const checkOpenClawSkills = () =>
+  tauriInvoke<OpenClawSkillCheckReport>('check_openclaw_skills')
+
+export const getOpenClawSkillInfo = (name: string) =>
+  tauriInvoke<OpenClawSkillInfo>('get_openclaw_skill_info', { name })
+
+export const createLocalOpenClawSkill = (request: CreateLocalSkillRequest) =>
+  tauriInvoke<Record<string, unknown>>('create_local_openclaw_skill', { request })
+
+export const deleteLocalOpenClawSkill = (name: string) =>
+  tauriInvoke<Record<string, unknown>>('delete_local_openclaw_skill', { name })
 
 export const saveUiPreferences = (preferences: UiPreferences) => (
   canInvokeTauri()

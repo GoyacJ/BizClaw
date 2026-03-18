@@ -28,6 +28,7 @@ pub struct InstallPlan {
 
 pub const MANUAL_INSTALL_URL: &str = "https://docs.openclaw.ai/install";
 pub const WINDOWS_NODE_MIN_MAJOR: u32 = 22;
+const WINDOWS_GIT_VERSION: &str = "2.53.0.windows.2";
 const WINDOWS_INSTALL_VERIFICATION_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -314,6 +315,25 @@ pub fn windows_native_ensure_node_plan() -> Option<InstallPlan> {
 }
 
 pub fn windows_native_ensure_git_plan() -> Option<InstallPlan> {
+    let command = [
+        "$ErrorActionPreference='Stop'; ".to_string(),
+        "$downloadDir = Join-Path $env:LOCALAPPDATA 'BizClaw\\downloads'; ".to_string(),
+        "New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null; ".to_string(),
+        format!("$version = 'v{}'; ", WINDOWS_GIT_VERSION),
+        format!("$fileName = 'Git-{}-64-bit.exe'; ", WINDOWS_GIT_VERSION),
+        "$mirrorUrl = 'https://registry.npmmirror.com/-/binary/git-for-windows/' + $version + '/' + $fileName; ".to_string(),
+        "$installer = Join-Path $downloadDir $fileName; ".to_string(),
+        "if (-not (Test-Path $installer)) { Invoke-WebRequest -Uri $mirrorUrl -OutFile $installer }; ".to_string(),
+        "Write-Output ('Git installer download complete: ' + $installer); ".to_string(),
+        "Write-Output ('Git installer execution started: ' + $installer); ".to_string(),
+        "$process = Start-Process -FilePath $installer -Wait -PassThru -ArgumentList @('/VERYSILENT', '/NORESTART', '/NOCANCEL', '/SP-'); ".to_string(),
+        "$exitCode = $process.ExitCode; ".to_string(),
+        "Write-Output ('Git installer execution finished with exit code: ' + $exitCode); ".to_string(),
+        "if ($exitCode -ne 0) { exit $exitCode }; ".to_string(),
+        "Write-Output 'Verifying Git installation'".to_string(),
+    ]
+    .concat();
+
     Some(InstallPlan {
         strategy: "ensure-git-download",
         program: "powershell".into(),
@@ -322,25 +342,7 @@ pub fn windows_native_ensure_git_plan() -> Option<InstallPlan> {
             "-ExecutionPolicy".into(),
             "Bypass".into(),
             "-Command".into(),
-            concat!(
-                "$ErrorActionPreference='Stop'; ",
-                "$downloadDir = Join-Path $env:LOCALAPPDATA 'BizClaw\\downloads'; ",
-                "New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null; ",
-                "$headers = @{ 'User-Agent' = 'BizClaw' }; ",
-                "$release = Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/git-for-windows/git/releases/latest'; ",
-                "$asset = $release.assets | Where-Object { $_.name -match '^Git-.*-64-bit\\.exe$' } | Select-Object -First 1; ",
-                "if ($null -eq $asset) { throw 'Could not resolve the latest Git for Windows 64-bit installer.' }; ",
-                "$installer = Join-Path $downloadDir $asset.name; ",
-                "if (-not (Test-Path $installer)) { Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile $installer }; ",
-                "Write-Output ('Git installer download complete: ' + $installer); ",
-                "Write-Output ('Git installer execution started: ' + $installer); ",
-                "$process = Start-Process -FilePath $installer -Wait -PassThru -ArgumentList @('/VERYSILENT', '/NORESTART', '/NOCANCEL', '/SP-'); ",
-                "$exitCode = $process.ExitCode; ",
-                "Write-Output ('Git installer execution finished with exit code: ' + $exitCode); ",
-                "if ($exitCode -ne 0) { exit $exitCode }; ",
-                "Write-Output 'Verifying Git installation'"
-            )
-            .into(),
+            command,
         ],
         envs: Vec::new(),
     })
@@ -1108,6 +1110,7 @@ mod tests {
         update_plans_for_target,
         windows_native_ensure_git_plan, windows_native_ensure_node_plan,
         windows_native_ensure_ssh_plan, Platform, WindowsInstallVerification,
+        WINDOWS_GIT_VERSION,
         WINDOWS_NODE_MIN_MAJOR,
     };
     use crate::types::{RuntimeTarget, TargetProfile};
@@ -1334,7 +1337,8 @@ mod tests {
         assert_eq!(plan.strategy, "ensure-git-download");
         assert_eq!(plan.program, "powershell");
         let command = plan.args.join(" ");
-        assert!(command.contains("git-for-windows/git/releases/latest"));
+        assert!(command.contains(WINDOWS_GIT_VERSION));
+        assert!(command.contains("registry.npmmirror.com/-/binary/git-for-windows/"));
         assert!(command.contains("64-bit"));
         assert!(command.contains("/VERYSILENT"));
         assert!(command.contains("/SP-"));

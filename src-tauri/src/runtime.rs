@@ -1,3 +1,4 @@
+#[cfg(target_os = "windows")]
 use crate::install::windows_ssh_executable_path;
 use crate::types::{CompanyProfile, TargetProfile, UserProfile};
 
@@ -45,12 +46,24 @@ pub fn build_native_ssh_command(
     args.extend(ssh_forward_args(profile));
 
     CommandSpec {
-        program: windows_ssh_executable_path()
-            .unwrap_or_else(|| "ssh".into())
-            .to_string_lossy()
-            .into_owned(),
+        program: native_ssh_program(),
         args,
         envs,
+    }
+}
+
+fn native_ssh_program() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        return windows_ssh_executable_path()
+            .unwrap_or_else(|| "ssh".into())
+            .to_string_lossy()
+            .into_owned();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        "ssh".into()
     }
 }
 

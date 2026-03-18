@@ -55,6 +55,7 @@ import {
   operationTaskPhaseLabel,
   runtimeDetail,
   runtimeTargetLabel,
+  sanitizeDisplayText,
   startRuntimeDisabledReason,
   tokenStatusLabel,
   tokenStatusTone,
@@ -342,9 +343,12 @@ export function useAppModel() {
   const targetProfile = reactive(defaultTargetProfile())
   const connectionTestModal = reactive<ConnectionTestModalState>(createConnectionTestModalState())
   const installRemediationModal = reactive<InstallRemediationModalState>(createInstallRemediationModalState())
-  const windowsInstallChoiceModalOpen = ref(false)
   const unlistenCallbacks: Array<() => void> = []
   const pendingBizClawUpdate = shallowRef<PendingBizClawUpdate | null>(null)
+  let logFlushTimer: ReturnType<typeof setTimeout> | null = null
+  let operationEventFlushTimer: ReturnType<typeof setTimeout> | null = null
+  const pendingLogs: LogEntry[] = []
+  const pendingOperationEvents: OperationEvent[] = []
   let stopObservingSystemTheme: (() => void) | null = null
 
   const companyProfileComplete = computed(() => isCompanyProfileDraftComplete(companyProfile))
@@ -426,7 +430,10 @@ export function useAppModel() {
       return translate('busy.stopping')
     }
     if (environment.value?.openclawInstalled) {
-      return environment.value.openclawVersion ?? translate('state.openclawReady')
+      return sanitizeDisplayText(
+        environment.value.openclawVersion,
+        translate('state.openclawReady'),
+      )
     }
     return translate('state.openclawInstallPending')
   })
@@ -593,32 +600,48 @@ export function useAppModel() {
   ))
   const profileError = computed(() => {
     if (lastErrorAction.value === 'save') {
-      return lastError.value
+      return sanitizeDisplayText(lastError.value, translate('runtime.startDisabled.tokenError'))
     }
 
     if (environment.value?.tokenStatus === 'error') {
-      return environment.value.tokenStatusMessage
+      return sanitizeDisplayText(
+        environment.value.tokenStatusMessage,
+        translate('runtime.startDisabled.tokenError'),
+      )
     }
 
     return null
   })
   const runtimeError = computed(() => {
     if (lastErrorAction.value === 'start' || lastErrorAction.value === 'stop') {
-      return lastError.value
+      return sanitizeDisplayText(lastError.value, translate('runtime.detail.idle'))
     }
 
-    return runtimeStatus.value.lastError ?? null
+    if (!runtimeStatus.value.lastError) {
+      return null
+    }
+
+    return sanitizeDisplayText(
+      runtimeStatus.value.lastError,
+      translate('runtime.detail.idle'),
+    )
   })
   const operationError = computed(() => {
     if (lastErrorAction.value === 'install'
       || lastErrorAction.value === 'check-update'
       || lastErrorAction.value === 'update'
       || lastErrorAction.value === 'stop-operation') {
-      return lastError.value
+      return sanitizeDisplayText(
+        lastError.value,
+        translate('runtime.operationsSummary.failedDetail'),
+      )
     }
 
     if (operationTask.value.phase === 'error') {
-      return operationTask.value.lastResult?.followUp ?? translate('runtime.operationsSummary.failedDetail')
+      return sanitizeDisplayText(
+        operationTask.value.lastResult?.followUp,
+        translate('runtime.operationsSummary.failedDetail'),
+      )
     }
 
     return null
@@ -638,7 +661,10 @@ export function useAppModel() {
         detail: snapshot.runtimeTarget === 'windowsWsl'
           ? (snapshot.wslStatus?.ready
             ? translate('overview.ubuntuReady', { name: snapshot.wslStatus.distroName })
-            : snapshot.wslStatus?.message ?? translate('overview.waitWsl'))
+            : sanitizeDisplayText(
+              snapshot.wslStatus?.message,
+              translate('overview.waitWsl'),
+            ))
           : translate('overview.localRuntimeDetail'),
         tone: snapshot.runtimeTarget === 'windowsWsl' && !snapshot.wslStatus?.ready
           ? 'warning'
@@ -647,13 +673,19 @@ export function useAppModel() {
       {
         label: translate('overview.openclaw'),
         value: snapshot.openclawInstalled
-          ? (snapshot.openclawVersion ?? translate('overview.installed'))
+          ? sanitizeDisplayText(
+            snapshot.openclawVersion,
+            translate('overview.installed'),
+          )
           : translate('overview.notInstalled'),
         detail: snapshot.updateAvailable
           ? translate('overview.updateAvailable', {
             version: snapshot.latestOpenclawVersion ?? translate('common.latest'),
           })
-          : snapshot.installRecommendation,
+          : sanitizeDisplayText(
+            snapshot.installRecommendation,
+            translate('runtime.operationsSummary.installMissingDetail'),
+          ),
         tone: snapshot.openclawInstalled ? (snapshot.updateAvailable ? 'active' : 'success') : 'warning',
       },
       {
@@ -698,9 +730,6 @@ export function useAppModel() {
   async function refreshEnvironment() {
     const snapshot = await detectEnvironment()
     environment.value = snapshot
-    if (!shouldPromptWindowsInstallChoice(snapshot)) {
-      windowsInstallChoiceModalOpen.value = false
-    }
     syncUiPreferences(snapshot.uiPreferences)
     if (!hydratedFromSaved.value && snapshot.savedSettings) {
       Object.assign(
@@ -1165,10 +1194,46 @@ export function useAppModel() {
     Object.assign(installRemediationModal, createInstallRemediationModalState())
   }
 
-  function shouldPromptWindowsInstallChoice(snapshot: EnvironmentSnapshot | null) {
-    return snapshot?.os === 'windows'
-      && snapshot.hostOpenclawInstalled === false
-      && snapshot.wslOpenclawInstalled === false
+  function flushPendingLogs() {
+    logFlushTimer = null
+    if (pendingLogs.length === 0) {
+      return
+    }
+
+    logs.value = [...logs.value, ...pendingLogs].slice(-400)
+    pendingLogs.length = 0
+  }
+
+  function flushPendingOperationEvents() {
+    operationEventFlushTimer = null
+    if (pendingOperationEvents.length === 0) {
+      return
+    }
+
+    operationEvents.value = [...operationEvents.value, ...pendingOperationEvents].slice(-200)
+    pendingOperationEvents.length = 0
+  }
+
+  function queueLog(entry: LogEntry) {
+    pendingLogs.push(entry)
+    if (logFlushTimer !== null) {
+      return
+    }
+
+    logFlushTimer = setTimeout(() => {
+      flushPendingLogs()
+    }, 50)
+  }
+
+  function queueOperationEvent(entry: OperationEvent) {
+    pendingOperationEvents.push(entry)
+    if (operationEventFlushTimer !== null) {
+      return
+    }
+
+    operationEventFlushTimer = setTimeout(() => {
+      flushPendingOperationEvents()
+    }, 50)
   }
 
   function openInstallRemediationModal(
@@ -1335,27 +1400,9 @@ export function useAppModel() {
 
   async function installCli() {
     activeSection.value = 'install'
-    if (shouldPromptWindowsInstallChoice(environment.value)) {
-      windowsInstallChoiceModalOpen.value = true
-      return
-    }
-
     await runOpenClawOperation('install', {
       preferOfficial: true,
       allowElevation: false,
-    })
-  }
-
-  function closeWindowsInstallChoiceModal() {
-    windowsInstallChoiceModalOpen.value = false
-  }
-
-  async function chooseWindowsInstallTarget(target: WindowsInstallTarget) {
-    windowsInstallChoiceModalOpen.value = false
-    await runOpenClawOperation('install', {
-      preferOfficial: true,
-      allowElevation: false,
-      windowsTarget: target,
     })
   }
 
@@ -1632,7 +1679,7 @@ export function useAppModel() {
   async function initializeSubscriptions() {
     const callbacks = await Promise.all([
       onRuntimeLog((entry) => {
-        logs.value = [...logs.value, entry].slice(-400)
+        queueLog(entry)
       }),
       onRuntimeStatus((status) => {
         if (!environment.value) {
@@ -1648,7 +1695,7 @@ export function useAppModel() {
         applyOperationTaskSnapshot(snapshot)
       }),
       onOperationEvent((entry) => {
-        operationEvents.value = [...operationEvents.value, entry].slice(-200)
+        queueOperationEvent(entry)
       }),
       onConnectionTestEvent((entry) => {
         applyConnectionTestEvent(entry)
@@ -1677,6 +1724,14 @@ export function useAppModel() {
 
   onBeforeUnmount(() => {
     disposed = true
+    if (logFlushTimer !== null) {
+      clearTimeout(logFlushTimer)
+      flushPendingLogs()
+    }
+    if (operationEventFlushTimer !== null) {
+      clearTimeout(operationEventFlushTimer)
+      flushPendingOperationEvents()
+    }
     stopObservingSystemTheme?.()
     stopObservingSystemTheme = null
     while (unlistenCallbacks.length > 0) {
@@ -1833,9 +1888,6 @@ export function useAppModel() {
     gatewayStateTone,
     sshStateLabel,
     uiPreferences,
-    windowsInstallChoiceModalOpen,
-    closeWindowsInstallChoiceModal,
-    chooseWindowsInstallTarget,
     operationTaskPhaseLabel,
     updateCli,
     userProfile,

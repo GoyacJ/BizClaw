@@ -30,11 +30,9 @@ const {
   canStartHostedRuntime,
   canStopOperation,
   canTestConnection,
-  chooseWindowsInstallTarget,
   checkForUpdates,
   closeConnectionTestModal,
   closeInstallRemediationModal,
-  closeWindowsInstallChoiceModal,
   companyProfile,
   confirmInstallRemediation,
   connectDisabledReason,
@@ -86,7 +84,6 @@ const {
   uiPreferences,
   updateCli,
   userProfile,
-  windowsInstallChoiceModalOpen,
 } = useAppModel()
 
 const sections = computed(() => ([
@@ -351,34 +348,6 @@ function connectionStepLabel(status: ConnectionTestModalStep['status']) {
       :status-items="statusItems"
     />
   </main>
-
-  <Teleport to="body">
-    <div v-if="windowsInstallChoiceModalOpen" class="modal-backdrop">
-      <section class="modal-card surface-card" role="dialog" aria-modal="true" aria-labelledby="windows-install-choice-title">
-        <div class="section-header">
-          <div>
-            <p class="eyebrow">{{ translate('install.windowsChoice.eyebrow') }}</p>
-            <h3 id="windows-install-choice-title">{{ translate('install.windowsChoice.title') }}</h3>
-          </div>
-          <span class="status-chip" data-tone="active">
-            {{ translate('runtime.phase.installNeeded') }}
-          </span>
-        </div>
-
-        <p class="supporting-text">{{ translate('install.windowsChoice.detail') }}</p>
-        <p class="supporting-text">{{ translate('install.windowsChoice.authorizationDetail') }}</p>
-
-        <div class="button-row button-row--end">
-          <button class="ghost-button" @click="closeWindowsInstallChoiceModal">
-            {{ translate('install.remediation.cancel') }}
-          </button>
-          <button class="primary-button" @click="chooseWindowsInstallTarget('windowsNative')">
-            {{ translate('install.windowsChoice.nativeAction') }}
-          </button>
-        </div>
-      </section>
-    </div>
-  </Teleport>
 
   <Teleport to="body">
     <div v-if="connectionTestModal.open" class="modal-backdrop">

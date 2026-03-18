@@ -2,7 +2,7 @@ import { createApp, defineComponent, h, nextTick } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { useAppModel } from './use-app-model'
-import type { EnvironmentSnapshot, OperationEvent, OperationTaskSnapshot } from '@/types'
+import type { EnvironmentSnapshot, LogEntry, OperationEvent, OperationTaskSnapshot } from '@/types'
 
 const apiMocks = vi.hoisted(() => ({
   addOpenClawAgentBindings: vi.fn(),
@@ -1334,10 +1334,10 @@ describe('useAppModel', () => {
     expect(model.operationTask.value.phase).toBe('success')
   })
 
-  it('opens a Windows install choice modal when neither local nor WSL OpenClaw is installed', async () => {
+  it('uses the native Windows install path directly when neither local nor WSL OpenClaw is installed', async () => {
     apiMocks.detectEnvironment.mockResolvedValue(createSnapshot({
       os: 'windows',
-      runtimeTarget: 'windowsWsl',
+      runtimeTarget: 'windowsNative',
       openclawInstalled: false,
       openclawVersion: null,
       latestOpenclawVersion: null,
@@ -1381,21 +1381,13 @@ describe('useAppModel', () => {
     await model.installCli()
     await flushPromises()
 
-    expect(model.windowsInstallChoiceModalOpen.value).toBe(true)
-    expect(apiMocks.installOpenClaw).not.toHaveBeenCalled()
-
-    await model.chooseWindowsInstallTarget('windowsNative')
-    await flushPromises()
-
     expect(apiMocks.installOpenClaw).toHaveBeenCalledWith({
       preferOfficial: true,
       allowElevation: false,
-      windowsTarget: 'windowsNative',
     })
-    expect(model.windowsInstallChoiceModalOpen.value).toBe(false)
   })
 
-  it('skips the Windows install choice modal when WSL already has OpenClaw installed', async () => {
+  it('keeps using the detected WSL installation when WSL already has OpenClaw installed', async () => {
     apiMocks.detectEnvironment.mockResolvedValue(createSnapshot({
       os: 'windows',
       runtimeTarget: 'windowsWsl',
@@ -1440,11 +1432,80 @@ describe('useAppModel', () => {
     await model.installCli()
     await flushPromises()
 
-    expect(model.windowsInstallChoiceModalOpen.value).toBe(false)
     expect(apiMocks.installOpenClaw).toHaveBeenCalledWith({
       preferOfficial: true,
       allowElevation: false,
     })
+  })
+
+  it('batches runtime logs and operation events before updating the UI state', async () => {
+    let runtimeLogHandler: ((entry: LogEntry) => void) | null = null
+    let operationEventHandler: ((entry: OperationEvent) => void) | null = null
+
+    apiMocks.detectEnvironment.mockResolvedValue(createSnapshot())
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockImplementation(async (handler: (entry: LogEntry) => void) => {
+      runtimeLogHandler = handler
+      return () => {}
+    })
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockImplementation(async (handler: (entry: OperationEvent) => void) => {
+      operationEventHandler = handler
+      return () => {}
+    })
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+
+    const emitRuntimeLog: (entry: LogEntry) => void = runtimeLogHandler ?? (() => {
+      throw new Error('expected runtime log subscription to be registered')
+    })
+    const emitOperationEvent: (entry: OperationEvent) => void = operationEventHandler ?? (() => {
+      throw new Error('expected operation event subscription to be registered')
+    })
+
+    emitRuntimeLog({
+      source: 'stdout',
+      level: 'info',
+      message: 'first log line',
+      timestampMs: 1,
+    })
+    emitOperationEvent({
+      kind: 'install',
+      step: 'installOpenClaw',
+      status: 'log',
+      source: 'stdout',
+      message: 'first event line',
+      timestampMs: 2,
+    })
+
+    expect(model.logs.value).toEqual([])
+    expect(model.operationEvents.value).toEqual([])
+
+    await flushPromises()
+
+    expect(model.logs.value).toHaveLength(1)
+    expect(model.logs.value[0]?.message).toBe('first log line')
+    expect(model.operationEvents.value).toHaveLength(1)
+    expect(model.operationEvents.value[0]?.message).toBe('first event line')
   })
 
   it('guides Homebrew installation and retries the update after the user asks to continue', async () => {
@@ -1607,6 +1668,8 @@ async function flushPromises() {
     await Promise.resolve()
     await nextTick()
   }
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  await nextTick()
 }
 
 function createSnapshot(overrides: Partial<EnvironmentSnapshot> = {}): EnvironmentSnapshot {

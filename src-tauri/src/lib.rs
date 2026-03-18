@@ -78,6 +78,8 @@ pub fn run() {
             commands::list_openclaw_skills,
             commands::check_openclaw_skills,
             commands::get_openclaw_skill_info,
+            commands::search_clawhub_skills,
+            commands::install_clawhub_skill,
             commands::create_local_openclaw_skill,
             commands::delete_local_openclaw_skill,
             commands::save_ui_preferences,

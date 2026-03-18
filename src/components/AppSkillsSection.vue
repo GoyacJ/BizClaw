@@ -1,28 +1,34 @@
 <script setup lang="ts">
-import { computed, reactive, type Ref } from 'vue'
+import { computed, reactive, ref, watch, type Ref } from 'vue'
 
 import { translate } from '@/lib/i18n'
 import type {
-  CreateLocalSkillRequest,
+  ClawHubSkillSearchResult,
+  InstallClawHubSkillRequest,
   OpenClawSkillInfo,
   OpenClawSkillInventory,
   OpenClawSkillLocationKind,
   OpenClawSkillSummary,
   OpenClawSkillCheckReport,
+  SearchClawHubSkillsRequest,
 } from '@/types'
 
 interface SkillsSectionState {
   inventory: Ref<OpenClawSkillInventory>
   checkReport: Ref<OpenClawSkillCheckReport>
+  searchResults: Ref<ClawHubSkillSearchResult[]>
   selectedSkillName: Ref<string | null>
   selectedSkillInfo: Ref<OpenClawSkillInfo | null>
   loading: Ref<boolean>
+  searchBusy: Ref<boolean>
   detailLoading: Ref<boolean>
   mutationBusy: Ref<boolean>
   error: Ref<string | null>
   refreshSkills: () => Promise<unknown> | unknown
   selectSkill: (name: string) => Promise<unknown> | unknown
-  createLocalSkill: (request: CreateLocalSkillRequest) => Promise<unknown> | unknown
+  searchInstallableSkills: (request: SearchClawHubSkillsRequest) => Promise<unknown> | unknown
+  clearSkillSearch: () => void
+  installSkill: (request: InstallClawHubSkillRequest) => Promise<unknown> | unknown
   deleteLocalSkill: (name: string) => Promise<unknown> | unknown
 }
 
@@ -30,8 +36,13 @@ const props = defineProps<{
   state: SkillsSectionState
 }>()
 
-const createDraft = reactive<CreateLocalSkillRequest>({
-  name: '',
+const installOpen = ref(false)
+const hasSearched = ref(false)
+const installDraft = reactive<{
+  query: string
+  location: InstallClawHubSkillRequest['location']
+}>({
+  query: '',
   location: 'workspaceLocal',
 })
 
@@ -51,6 +62,21 @@ const groupedSkills = computed(() => {
   return groups.filter((group) => group.skills.length > 0)
 })
 
+const canInstallToWorkspace = computed(() => Boolean(props.state.inventory.value.workspaceDir))
+const canInstallToShared = computed(() => Boolean(props.state.inventory.value.managedSkillsDir))
+const canSearch = computed(() => (
+  installDraft.query.trim().length > 0
+  && (canInstallToWorkspace.value || canInstallToShared.value)
+))
+
+watch([canInstallToWorkspace, canInstallToShared], ([workspaceAvailable, sharedAvailable]) => {
+  if (installDraft.location === 'workspaceLocal' && !workspaceAvailable && sharedAvailable) {
+    installDraft.location = 'sharedLocal'
+  } else if (installDraft.location === 'sharedLocal' && !sharedAvailable && workspaceAvailable) {
+    installDraft.location = 'workspaceLocal'
+  }
+}, { immediate: true })
+
 function skillTone(skill: OpenClawSkillSummary) {
   if (skill.eligible) {
     return 'success'
@@ -64,17 +90,34 @@ function skillTone(skill: OpenClawSkillSummary) {
   return 'active'
 }
 
-async function submitCreateSkill() {
-  const name = createDraft.name.trim()
-  if (!name) {
+function openInstallModal() {
+  installOpen.value = true
+}
+
+function closeInstallModal() {
+  installOpen.value = false
+  hasSearched.value = false
+  props.state.clearSkillSearch()
+}
+
+async function submitSkillSearch() {
+  if (!canSearch.value) {
     return
   }
 
-  await props.state.createLocalSkill({
-    name,
-    location: createDraft.location,
+  hasSearched.value = true
+  await props.state.searchInstallableSkills({
+    query: installDraft.query.trim(),
+    limit: 8,
   })
-  createDraft.name = ''
+}
+
+async function installSearchResult(result: ClawHubSkillSearchResult) {
+  await props.state.installSkill({
+    slug: result.slug,
+    location: installDraft.location,
+  })
+  closeInstallModal()
 }
 
 async function deleteSelectedSkill() {
@@ -125,35 +168,12 @@ async function deleteSelectedSkill() {
       </div>
 
       <div class="button-row">
+        <button class="primary-button" type="button" @click="openInstallModal">
+          {{ translate('skills.create') }}
+        </button>
         <button class="secondary-button" type="button" :disabled="props.state.loading.value" @click="props.state.refreshSkills">
           {{ translate('skills.refresh') }}
         </button>
-      </div>
-
-      <div class="management-panel">
-        <div class="section-header">
-          <div>
-            <span class="card-label">{{ translate('skills.createTitle') }}</span>
-          </div>
-        </div>
-        <div class="form-grid">
-          <label class="field">
-            <span>{{ translate('skills.name') }}</span>
-            <input v-model="createDraft.name" :placeholder="translate('skills.placeholderName')" />
-          </label>
-          <label class="field">
-            <span>{{ translate('skills.location') }}</span>
-            <select v-model="createDraft.location" class="field-select">
-              <option value="workspaceLocal">{{ translate('skills.workspaceLocation') }}</option>
-              <option value="sharedLocal">{{ translate('skills.sharedLocation') }}</option>
-            </select>
-          </label>
-        </div>
-        <div class="button-row button-row--end">
-          <button class="primary-button" type="button" :disabled="props.state.mutationBusy.value" @click="submitCreateSkill">
-            {{ translate('skills.createSubmit') }}
-          </button>
-        </div>
       </div>
     </article>
 
@@ -184,7 +204,7 @@ async function deleteSelectedSkill() {
                 class="management-row"
                 :data-active="String(skill.name === props.state.selectedSkillName.value)"
                 type="button"
-                @click="props.state.selectSkill(skill.name)"
+                @click="void props.state.selectSkill(skill.name)"
               >
                 <div class="management-row-main">
                   <strong>{{ skill.name }}</strong>
@@ -226,16 +246,16 @@ async function deleteSelectedSkill() {
         <div v-else-if="props.state.selectedSkillInfo.value" class="page-stack">
           <p class="supporting-text">{{ props.state.selectedSkillInfo.value.description }}</p>
 
-          <div class="support-grid support-grid--metrics">
-            <div class="support-tile">
-              <span>{{ translate('skills.source') }}</span>
-              <strong>{{ props.state.selectedSkillInfo.value.source }}</strong>
+          <dl class="detail-metadata-grid">
+            <div class="detail-metadata-card">
+              <dt>{{ translate('skills.source') }}</dt>
+              <dd :title="props.state.selectedSkillInfo.value.source">{{ props.state.selectedSkillInfo.value.source }}</dd>
             </div>
-            <div class="support-tile">
-              <span>{{ translate('skills.path') }}</span>
-              <strong>{{ props.state.selectedSkillInfo.value.filePath }}</strong>
+            <div class="detail-metadata-card detail-metadata-card--full">
+              <dt>{{ translate('skills.path') }}</dt>
+              <dd :title="props.state.selectedSkillInfo.value.filePath">{{ props.state.selectedSkillInfo.value.filePath }}</dd>
             </div>
-          </div>
+          </dl>
 
           <section class="management-panel">
             <span class="card-label">{{ translate('skills.requirements') }}</span>
@@ -284,5 +304,78 @@ async function deleteSelectedSkill() {
     </div>
 
     <p v-if="props.state.error.value" class="error-banner">{{ props.state.error.value }}</p>
+
+    <Teleport to="body">
+      <div v-if="installOpen" class="modal-backdrop">
+        <section class="modal-card surface-card" role="dialog" aria-modal="true" aria-labelledby="install-skill-title">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">{{ translate('skills.eyebrow') }}</p>
+              <h3 id="install-skill-title">{{ translate('skills.createTitle') }}</h3>
+            </div>
+            <span class="status-chip" data-tone="active">
+              {{ translate('skills.title') }}
+            </span>
+          </div>
+
+          <div class="form-grid">
+            <label class="field field--span">
+              <span>{{ translate('skills.searchLabel') }}</span>
+              <input v-model="installDraft.query" :placeholder="translate('skills.searchPlaceholder')" />
+            </label>
+            <label class="field">
+              <span>{{ translate('skills.location') }}</span>
+              <select v-model="installDraft.location" class="field-select">
+                <option value="workspaceLocal" :disabled="!canInstallToWorkspace">{{ translate('skills.workspaceLocation') }}</option>
+                <option value="sharedLocal" :disabled="!canInstallToShared">{{ translate('skills.sharedLocation') }}</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="button-row button-row--end">
+            <button class="secondary-button" type="button" :disabled="props.state.searchBusy.value || props.state.mutationBusy.value" @click="closeInstallModal">
+              {{ translate('common.close') }}
+            </button>
+            <button class="primary-button" type="button" :disabled="!canSearch || props.state.searchBusy.value || props.state.mutationBusy.value" @click="submitSkillSearch">
+              {{ translate('skills.searchAction') }}
+            </button>
+          </div>
+
+          <section class="management-panel">
+            <div class="section-header">
+              <div>
+                <span class="card-label">{{ translate('skills.searchResults') }}</span>
+              </div>
+              <span v-if="props.state.searchBusy.value" class="status-chip" data-tone="active">
+                {{ translate('common.inProgress') }}
+              </span>
+            </div>
+
+            <div v-if="props.state.searchBusy.value" class="empty-state">
+              {{ translate('common.inProgress') }}
+            </div>
+            <div v-else-if="!hasSearched" class="empty-state">
+              {{ translate('skills.searchPrompt') }}
+            </div>
+            <div v-else-if="props.state.searchResults.value.length === 0" class="empty-state">
+              {{ translate('skills.noSearchResults') }}
+            </div>
+            <div v-else class="management-list">
+              <div v-for="result in props.state.searchResults.value" :key="result.slug" class="management-row management-row--static">
+                <div class="management-row-main">
+                  <strong>{{ result.title }}</strong>
+                  <span>{{ result.slug }}<template v-if="result.score !== null"> · {{ result.score.toFixed(3) }}</template></span>
+                </div>
+                <div class="management-row-meta">
+                  <button class="primary-button" type="button" :disabled="props.state.mutationBusy.value" @click="installSearchResult(result)">
+                    {{ translate('skills.createSubmit') }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+        </section>
+      </div>
+    </Teleport>
   </section>
 </template>

@@ -256,6 +256,7 @@ vi.mock('@/lib/use-app-model', () => {
       agentsState: {
         agents,
         bindings: agentBindings,
+        bindingsLoading: ref(false),
         selectedAgentId: ref('main'),
         loading: ref(false),
         mutationBusy: ref(false),
@@ -384,15 +385,19 @@ vi.mock('@/lib/use-app-model', () => {
       skillsState: {
         inventory: skillsInventory,
         checkReport: skillsCheck,
+        searchResults: ref([]),
         selectedSkillName: ref('sonoscli'),
         selectedSkillInfo,
         loading: ref(false),
+        searchBusy: ref(false),
         detailLoading: ref(false),
         mutationBusy: ref(false),
         error: ref<string | null>(null),
         refreshSkills: vi.fn(),
         selectSkill: vi.fn(),
-        createLocalSkill: vi.fn(),
+        searchInstallableSkills: vi.fn(),
+        clearSkillSearch: vi.fn(),
+        installSkill: vi.fn(),
         deleteLocalSkill: vi.fn(),
       },
       sshPasswordInput: ref(''),
@@ -464,7 +469,7 @@ describe('App operations center', () => {
       node.textContent?.trim(),
     )
 
-    expect(navButtons).toEqual(['概览', '代理(agent)', '安装与更新', '连接与配置', '运行日志', '技能(skill)', '设置'])
+    expect(navButtons).toEqual(['概览', '代理', '安装与更新', '连接与配置', '运行日志', '技能', '设置'])
     expect(host.textContent).toContain('BIZCLAW')
     expect(host.textContent).not.toContain('操作中心')
     expect(host.textContent).not.toContain('macOS 本机')
@@ -655,14 +660,14 @@ describe('App operations center', () => {
     await nextTick()
 
     const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
-      .find((node) => node.textContent?.includes('代理(agent)'))
+      .find((node) => node.textContent?.includes('代理'))
     button?.click()
     await nextTick()
 
-    expect(host.textContent).toContain('代理(agent)')
+    expect(host.textContent).toContain('代理')
     expect(host.textContent).toContain('main')
     expect(host.textContent).toContain('霸天 (Bàtiān)')
-    expect(host.textContent).toContain('Workspace')
+    expect(host.textContent).toContain('工作区')
     expect(host.textContent).toContain('telegram (default account)')
   })
 
@@ -677,15 +682,78 @@ describe('App operations center', () => {
     await nextTick()
 
     const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
-      .find((node) => node.textContent?.includes('技能(skill)'))
+      .find((node) => node.textContent?.includes('技能'))
     button?.click()
     await nextTick()
 
-    expect(host.textContent).toContain('技能(skill)')
+    expect(host.textContent).toContain('技能')
     expect(host.textContent).toContain('sonoscli')
     expect(host.textContent).toContain('coding-agent')
     expect(host.textContent).toContain('可删除')
     expect(host.textContent).toContain('只读')
+    expect(host.textContent).toContain('/Users/goya/.openclaw/workspace/skills/sonoscli/SKILL.md')
+  })
+
+  it('opens and closes the create-agent modal on the agent page', async () => {
+    const { default: App } = await import('./App.vue')
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+
+    app = createApp(App)
+    app.mount(host)
+    await nextTick()
+
+    const agentNavButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+      .find((node) => node.textContent?.includes('代理'))
+    agentNavButton?.click()
+    await nextTick()
+
+    const openButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+      .find((node) => node.textContent?.includes('创建代理'))
+    openButton?.click()
+    await nextTick()
+
+    expect(document.body.textContent).toContain('创建代理')
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
+
+    const closeButton = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find((node) => node.textContent?.trim() === '关闭')
+    closeButton?.click()
+    await nextTick()
+
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it('opens and closes the install-skill modal on the skill page', async () => {
+    const { default: App } = await import('./App.vue')
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+
+    app = createApp(App)
+    app.mount(host)
+    await nextTick()
+
+    const skillNavButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+      .find((node) => node.textContent?.includes('技能'))
+    skillNavButton?.click()
+    await nextTick()
+
+    const openButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+      .find((node) => node.textContent?.includes('安装技能'))
+    openButton?.click()
+    await nextTick()
+
+    expect(document.body.textContent).toContain('安装技能')
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
+
+    const closeButton = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find((node) => node.textContent?.trim() === '关闭')
+    closeButton?.click()
+    await nextTick()
+
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
   })
 
   it('shows the global status bar instead of a sidebar summary', async () => {

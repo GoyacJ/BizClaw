@@ -14,6 +14,7 @@ const apiMocks = vi.hoisted(() => ({
   deleteOpenClawAgent: vi.fn(),
   detectEnvironment: vi.fn(),
   getOpenClawSkillInfo: vi.fn(),
+  installClawHubSkill: vi.fn(),
   streamLogs: vi.fn(),
   getOperationStatus: vi.fn(),
   getOperationEvents: vi.fn(),
@@ -31,6 +32,7 @@ const apiMocks = vi.hoisted(() => ({
   openSupportUrl: vi.fn(),
   saveProfile: vi.fn(),
   saveUiPreferences: vi.fn(),
+  searchClawHubSkills: vi.fn(),
   startRuntime: vi.fn(),
   stopOpenClawOperation: vi.fn(),
   stopRuntime: vi.fn(),
@@ -61,6 +63,7 @@ vi.mock('@/lib/api', () => ({
   getOperationEvents: apiMocks.getOperationEvents,
   getOperationStatus: apiMocks.getOperationStatus,
   getOpenClawSkillInfo: apiMocks.getOpenClawSkillInfo,
+  installClawHubSkill: apiMocks.installClawHubSkill,
   installOpenClaw: apiMocks.installOpenClaw,
   listOpenClawAgentBindings: apiMocks.listOpenClawAgentBindings,
   listOpenClawAgents: apiMocks.listOpenClawAgents,
@@ -75,6 +78,7 @@ vi.mock('@/lib/api', () => ({
   openSupportUrl: apiMocks.openSupportUrl,
   saveProfile: apiMocks.saveProfile,
   saveUiPreferences: apiMocks.saveUiPreferences,
+  searchClawHubSkills: apiMocks.searchClawHubSkills,
   startRuntime: apiMocks.startRuntime,
   stopOpenClawOperation: apiMocks.stopOpenClawOperation,
   stopRuntime: apiMocks.stopRuntime,
@@ -267,19 +271,6 @@ describe('useAppModel', () => {
         },
       ],
     })
-    apiMocks.checkOpenClawSkills.mockResolvedValue({
-      summary: {
-        total: 1,
-        eligible: 1,
-        disabled: 0,
-        blocked: 0,
-        missingRequirements: 0,
-      },
-      eligible: ['sonoscli'],
-      disabled: [],
-      blocked: [],
-      missingRequirements: [],
-    })
     bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
     apiMocks.onRuntimeLog.mockResolvedValue(() => {})
     apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
@@ -305,8 +296,9 @@ describe('useAppModel', () => {
 
     expect(apiMocks.listOpenClawAgents).toHaveBeenCalledTimes(1)
     expect(apiMocks.listOpenClawAgentBindings).toHaveBeenCalledTimes(1)
+    expect(apiMocks.listOpenClawAgentBindings).toHaveBeenCalledWith('main')
     expect(apiMocks.listOpenClawSkills).toHaveBeenCalledTimes(1)
-    expect(apiMocks.checkOpenClawSkills).toHaveBeenCalledTimes(1)
+    expect(apiMocks.checkOpenClawSkills).not.toHaveBeenCalled()
     expect(model.agentsState.agents.value[0]?.id).toBe('main')
     expect(model.agentsState.bindings.value[0]?.description).toContain('telegram')
     expect(model.skillsState.inventory.value.skills[0]?.name).toBe('sonoscli')
@@ -368,19 +360,6 @@ describe('useAppModel', () => {
       managedSkillsDir: '/Users/goya/.openclaw/skills',
       skills: [],
     })
-    apiMocks.checkOpenClawSkills.mockResolvedValue({
-      summary: {
-        total: 0,
-        eligible: 0,
-        disabled: 0,
-        blocked: 0,
-        missingRequirements: 0,
-      },
-      eligible: [],
-      disabled: [],
-      blocked: [],
-      missingRequirements: [],
-    })
     apiMocks.createOpenClawAgent.mockResolvedValue({
       agentId: 'ops',
     })
@@ -421,7 +400,344 @@ describe('useAppModel', () => {
       bindings: [],
     })
     expect(apiMocks.listOpenClawAgents).toHaveBeenCalledTimes(2)
+    expect(apiMocks.listOpenClawAgentBindings).toHaveBeenNthCalledWith(1, 'main')
+    expect(apiMocks.listOpenClawAgentBindings).toHaveBeenNthCalledWith(2, 'ops')
     expect(model.agentsState.agents.value).toHaveLength(2)
+  })
+
+  it('loads agent bindings lazily and does not refetch the same agent twice', async () => {
+    apiMocks.detectEnvironment.mockResolvedValue(createSnapshot())
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.listOpenClawAgents.mockResolvedValue([
+      {
+        id: 'main',
+        name: 'Main',
+        identityName: '霸天',
+        identityEmoji: '🐯',
+        identitySource: 'identity',
+        workspace: '/Users/goya/.openclaw/workspace',
+        agentDir: '/Users/goya/.openclaw/agents/main/agent',
+        model: 'minimax-cn/MiniMax-M2.5',
+        bindings: 1,
+        isDefault: true,
+        routes: ['default (no explicit rules)'],
+      },
+      {
+        id: 'ops',
+        name: 'Ops',
+        identityName: '值班',
+        identityEmoji: '🛠',
+        identitySource: 'config',
+        workspace: '/tmp/openclaw-ops',
+        agentDir: '/Users/goya/.openclaw/agents/ops/agent',
+        model: 'minimax-cn/MiniMax-M2.5',
+        bindings: 0,
+        isDefault: false,
+        routes: [],
+      },
+    ])
+    apiMocks.listOpenClawAgentBindings
+      .mockResolvedValueOnce([
+        {
+          agentId: 'main',
+          channel: 'telegram',
+          accountId: null,
+          description: 'telegram (default account)',
+        },
+      ])
+      .mockResolvedValueOnce([])
+    apiMocks.listOpenClawSkills.mockResolvedValue({
+      workspaceDir: '/Users/goya/.openclaw/workspace',
+      managedSkillsDir: '/Users/goya/.openclaw/skills',
+      skills: [],
+    })
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+
+    await model.agentsState.selectAgent('ops')
+    await flushPromises()
+    await model.agentsState.selectAgent('ops')
+    await flushPromises()
+
+    expect(apiMocks.listOpenClawAgentBindings).toHaveBeenCalledTimes(2)
+    expect(apiMocks.listOpenClawAgentBindings).toHaveBeenNthCalledWith(1, 'main')
+    expect(apiMocks.listOpenClawAgentBindings).toHaveBeenNthCalledWith(2, 'ops')
+    expect(model.agentsState.selectedAgentId.value).toBe('ops')
+  })
+
+  it('caches skill detail requests across repeated selections', async () => {
+    apiMocks.detectEnvironment.mockResolvedValue(createSnapshot())
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.listOpenClawAgents.mockResolvedValue([
+      {
+        id: 'main',
+        name: 'Main',
+        identityName: '霸天',
+        identityEmoji: '🐯',
+        identitySource: 'identity',
+        workspace: '/Users/goya/.openclaw/workspace',
+        agentDir: '/Users/goya/.openclaw/agents/main/agent',
+        model: 'minimax-cn/MiniMax-M2.5',
+        bindings: 0,
+        isDefault: true,
+        routes: [],
+      },
+    ])
+    apiMocks.listOpenClawAgentBindings.mockResolvedValue([])
+    apiMocks.listOpenClawSkills.mockResolvedValue({
+      workspaceDir: '/Users/goya/.openclaw/workspace',
+      managedSkillsDir: '/Users/goya/.openclaw/skills',
+      skills: [
+        {
+          name: 'sonoscli',
+          description: 'Control Sonos speakers.',
+          eligible: true,
+          disabled: false,
+          blockedByAllowlist: false,
+          source: 'openclaw-workspace',
+          bundled: false,
+          locationKind: 'workspaceLocal',
+          canDelete: true,
+          missing: {
+            bins: [],
+            anyBins: [],
+            env: [],
+            config: [],
+            os: [],
+          },
+        },
+        {
+          name: 'coding-agent',
+          description: 'Delegate coding tasks.',
+          eligible: true,
+          disabled: false,
+          blockedByAllowlist: false,
+          source: 'openclaw-bundled',
+          bundled: true,
+          locationKind: 'bundled',
+          canDelete: false,
+          missing: {
+            bins: [],
+            anyBins: [],
+            env: [],
+            config: [],
+            os: [],
+          },
+        },
+      ],
+    })
+    apiMocks.getOpenClawSkillInfo.mockResolvedValue({
+      name: 'coding-agent',
+      description: 'Delegate coding tasks.',
+      source: 'openclaw-bundled',
+      bundled: true,
+      locationKind: 'bundled',
+      canDelete: false,
+      filePath: '/Users/goya/.openclaw/skills/coding-agent/SKILL.md',
+      baseDir: '/Users/goya/.openclaw/skills/coding-agent',
+      skillKey: 'coding-agent',
+      homepage: null,
+      always: false,
+      disabled: false,
+      blockedByAllowlist: false,
+      eligible: true,
+      requirements: {
+        bins: [],
+        anyBins: [],
+        env: [],
+        config: [],
+        os: [],
+      },
+      missing: {
+        bins: [],
+        anyBins: [],
+        env: [],
+        config: [],
+        os: [],
+      },
+      configChecks: [],
+      install: [],
+    })
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+
+    await model.skillsState.selectSkill('coding-agent')
+    await flushPromises()
+    await model.skillsState.selectSkill('coding-agent')
+    await flushPromises()
+
+    expect(apiMocks.getOpenClawSkillInfo).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getOpenClawSkillInfo).toHaveBeenCalledWith('coding-agent')
+    expect(model.skillsState.selectedSkillInfo.value?.name).toBe('coding-agent')
+  })
+
+  it('installs a searched skill and selects it after refreshing inventory', async () => {
+    apiMocks.detectEnvironment.mockResolvedValue(createSnapshot())
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.listOpenClawAgents.mockResolvedValue([
+      {
+        id: 'main',
+        name: 'Main',
+        identityName: '霸天',
+        identityEmoji: '🐯',
+        identitySource: 'identity',
+        workspace: '/Users/goya/.openclaw/workspace',
+        agentDir: '/Users/goya/.openclaw/agents/main/agent',
+        model: 'minimax-cn/MiniMax-M2.5',
+        bindings: 0,
+        isDefault: true,
+        routes: [],
+      },
+    ])
+    apiMocks.listOpenClawAgentBindings.mockResolvedValue([])
+    apiMocks.listOpenClawSkills
+      .mockResolvedValueOnce({
+        workspaceDir: '/Users/goya/.openclaw/workspace',
+        managedSkillsDir: '/Users/goya/.openclaw/skills',
+        skills: [],
+      })
+      .mockResolvedValueOnce({
+        workspaceDir: '/Users/goya/.openclaw/workspace',
+        managedSkillsDir: '/Users/goya/.openclaw/skills',
+        skills: [
+          {
+            name: 'calendar',
+            description: 'Calendar utilities.',
+            eligible: true,
+            disabled: false,
+            blockedByAllowlist: false,
+            source: 'openclaw-workspace',
+            bundled: false,
+            locationKind: 'workspaceLocal',
+            canDelete: true,
+            missing: {
+              bins: [],
+              anyBins: [],
+              env: [],
+              config: [],
+              os: [],
+            },
+          },
+        ],
+      })
+    apiMocks.installClawHubSkill.mockResolvedValue({
+      slug: 'calendar',
+      location: 'workspaceLocal',
+    })
+    apiMocks.getOpenClawSkillInfo.mockResolvedValue({
+      name: 'calendar',
+      description: 'Calendar utilities.',
+      source: 'openclaw-workspace',
+      bundled: false,
+      locationKind: 'workspaceLocal',
+      canDelete: true,
+      filePath: '/Users/goya/.openclaw/workspace/skills/calendar/SKILL.md',
+      baseDir: '/Users/goya/.openclaw/workspace/skills/calendar',
+      skillKey: 'calendar',
+      homepage: null,
+      always: false,
+      disabled: false,
+      blockedByAllowlist: false,
+      eligible: true,
+      requirements: {
+        bins: [],
+        anyBins: [],
+        env: [],
+        config: [],
+        os: [],
+      },
+      missing: {
+        bins: [],
+        anyBins: [],
+        env: [],
+        config: [],
+        os: [],
+      },
+      configChecks: [],
+      install: [],
+    })
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+
+    await model.skillsState.installSkill({
+      slug: 'calendar',
+      location: 'workspaceLocal',
+    })
+    await flushPromises()
+
+    expect(apiMocks.installClawHubSkill).toHaveBeenCalledWith({
+      slug: 'calendar',
+      location: 'workspaceLocal',
+    })
+    expect(apiMocks.listOpenClawSkills).toHaveBeenCalledTimes(2)
+    expect(model.skillsState.selectedSkillName.value).toBe('calendar')
+    expect(model.skillsState.selectedSkillInfo.value?.name).toBe('calendar')
   })
 
   it('keeps save-and-test available while environment detection is still pending', async () => {

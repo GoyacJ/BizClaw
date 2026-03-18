@@ -29,6 +29,7 @@ pub struct InstallPlan {
 pub const MANUAL_INSTALL_URL: &str = "https://docs.openclaw.ai/install";
 pub const WINDOWS_NODE_MIN_MAJOR: u32 = 22;
 const WINDOWS_GIT_VERSION: &str = "2.53.0.windows.2";
+const WINDOWS_GIT_FILE_VERSION: &str = "2.53.0.2";
 const WINDOWS_INSTALL_VERIFICATION_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -337,7 +338,7 @@ pub fn windows_native_ensure_git_plan() -> Option<InstallPlan> {
         "$downloadDir = Join-Path $env:LOCALAPPDATA 'BizClaw\\downloads'; ".to_string(),
         "New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null; ".to_string(),
         format!("$version = 'v{}'; ", WINDOWS_GIT_VERSION),
-        format!("$fileName = 'Git-{}-64-bit.exe'; ", WINDOWS_GIT_VERSION),
+        format!("$fileName = 'Git-{}-64-bit.exe'; ", WINDOWS_GIT_FILE_VERSION),
         "$mirrorUrl = 'https://registry.npmmirror.com/-/binary/git-for-windows/' + $version + '/' + $fileName; ".to_string(),
         "$installer = Join-Path $downloadDir $fileName; ".to_string(),
         "if (-not (Test-Path $installer)) { Invoke-WebRequest -Uri $mirrorUrl -OutFile $installer }; ".to_string(),
@@ -1121,6 +1122,7 @@ mod tests {
         preferred_windows_runtime_target, should_retry_with_elevation, update_plans_for_target,
         windows_native_ensure_git_plan, windows_native_ensure_node_plan,
         windows_native_ensure_ssh_plan, Platform, WindowsInstallVerification,
+        WINDOWS_GIT_FILE_VERSION,
         WINDOWS_GIT_VERSION,
         WINDOWS_NODE_MIN_MAJOR,
     };
@@ -1345,6 +1347,7 @@ mod tests {
         assert_eq!(plan.program, "powershell");
         let command = plan.args.join(" ");
         assert!(command.contains(WINDOWS_GIT_VERSION));
+        assert!(command.contains(WINDOWS_GIT_FILE_VERSION));
         assert!(command.contains("registry.npmmirror.com/-/binary/git-for-windows/"));
         assert!(command.contains("64-bit"));
         assert!(command.contains("/VERYSILENT"));

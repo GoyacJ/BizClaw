@@ -341,23 +341,14 @@ function connectionStepLabel(status: ConnectionTestModalStep['status']) {
         </div>
 
         <p class="supporting-text">{{ translate('install.windowsChoice.detail') }}</p>
-        <p class="supporting-text">
-          {{
-            environment?.wslStatus?.ready
-              ? translate('install.windowsChoice.wslReadyDetail', { name: environment.wslStatus.distroName })
-              : translate('install.windowsChoice.wslSetupDetail', { name: environment?.wslStatus?.distroName ?? 'Ubuntu' })
-          }}
-        </p>
+        <p class="supporting-text">{{ translate('install.windowsChoice.authorizationDetail') }}</p>
 
         <div class="button-row button-row--end">
           <button class="ghost-button" @click="closeWindowsInstallChoiceModal">
             {{ translate('install.remediation.cancel') }}
           </button>
-          <button class="secondary-button" @click="chooseWindowsInstallTarget('windowsNative')">
+          <button class="primary-button" @click="chooseWindowsInstallTarget('windowsNative')">
             {{ translate('install.windowsChoice.nativeAction') }}
-          </button>
-          <button class="primary-button" @click="chooseWindowsInstallTarget('windowsWsl')">
-            {{ translate('install.windowsChoice.wslAction') }}
           </button>
         </div>
       </section>

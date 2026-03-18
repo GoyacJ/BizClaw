@@ -1,4 +1,8 @@
-use std::{env, process::Command};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use anyhow::{anyhow, Result};
 
@@ -22,6 +26,7 @@ pub struct InstallPlan {
 }
 
 pub const MANUAL_INSTALL_URL: &str = "https://docs.openclaw.ai/install";
+pub const WINDOWS_NODE_MIN_MAJOR: u32 = 22;
 
 pub fn current_platform() -> Result<Platform> {
     match env::consts::OS {
@@ -34,7 +39,7 @@ pub fn current_platform() -> Result<Platform> {
 pub fn default_install_target(platform: Platform) -> RuntimeTarget {
     match platform {
         Platform::MacOs => RuntimeTarget::MacNative,
-        Platform::Windows => RuntimeTarget::WindowsWsl,
+        Platform::Windows => RuntimeTarget::WindowsNative,
     }
 }
 
@@ -47,7 +52,7 @@ pub fn preferred_windows_runtime_target(
     } else if wsl_openclaw_installed {
         RuntimeTarget::WindowsWsl
     } else {
-        RuntimeTarget::WindowsWsl
+        RuntimeTarget::WindowsNative
     }
 }
 
@@ -63,6 +68,23 @@ pub fn resolve_runtime_target(platform: Platform, target_profile: &TargetProfile
 
 pub fn command_available(name: &str) -> bool {
     which::which(name).is_ok()
+}
+
+pub fn windows_local_ssh_ready() -> bool {
+    command_available("ssh")
+}
+
+pub fn windows_local_node_ready() -> bool {
+    windows_local_node_version()
+        .as_deref()
+        .map(node_version_satisfies_minimum)
+        .unwrap_or(false)
+}
+
+pub fn windows_local_node_version() -> Option<String> {
+    let node_program = windows_node_executable_path()?;
+    let output = Command::new(node_program).arg("--version").output().ok()?;
+    read_first_non_empty_line(output)
 }
 
 pub fn target_command_available(
@@ -96,7 +118,7 @@ pub fn official_install_plan(platform: Platform) -> InstallPlan {
             ],
             envs: Vec::new(),
         },
-        Platform::Windows => wsl_bootstrap_plan(&TargetProfile::default()),
+        Platform::Windows => windows_native_official_install_plan(),
     }
 }
 
@@ -111,8 +133,67 @@ pub fn windows_native_official_install_plan() -> InstallPlan {
             "-Command".into(),
             "iwr -useb https://openclaw.ai/install.ps1 | iex".into(),
         ],
+        envs: windows_native_openclaw_install_env(),
+    }
+}
+
+pub fn windows_native_ensure_ssh_plan() -> InstallPlan {
+    if let Some(msi_path) = windows_openssh_msi_path() {
+        return InstallPlan {
+            strategy: "ensure-ssh-msi",
+            program: "msiexec.exe".into(),
+            args: vec![
+                "/i".into(),
+                msi_path.to_string_lossy().into_owned(),
+                "/qn".into(),
+                "/norestart".into(),
+            ],
+            envs: Vec::new(),
+        };
+    }
+
+    InstallPlan {
+        strategy: "ensure-ssh",
+        program: "powershell".into(),
+        args: vec![
+            "-NoProfile".into(),
+            "-ExecutionPolicy".into(),
+            "Bypass".into(),
+            "-Command".into(),
+            concat!(
+                "$ErrorActionPreference='Stop'; ",
+                "$cap = Get-WindowsCapability -Online | Where-Object Name -like 'OpenSSH.Client*' | Select-Object -First 1; ",
+                "if ($null -eq $cap) { throw 'OpenSSH Client capability is unavailable on this Windows image.' }; ",
+                "if ($cap.State -ne 'Installed') { Add-WindowsCapability -Online -Name $cap.Name | Out-Null }; ",
+                "Write-Output 'OpenSSH client installed and ssh command is available.'"
+            )
+            .into(),
+        ],
         envs: Vec::new(),
     }
+}
+
+pub fn windows_native_ensure_node_plan() -> Option<InstallPlan> {
+    let msi_path = windows_node_msi_path()?;
+    Some(InstallPlan {
+        strategy: "ensure-node-msi",
+        program: "msiexec.exe".into(),
+        args: vec![
+            "/i".into(),
+            msi_path.to_string_lossy().into_owned(),
+            "/qn".into(),
+            "/norestart".into(),
+        ],
+        envs: Vec::new(),
+    })
+}
+
+pub fn windows_openssh_msi_path() -> Option<PathBuf> {
+    bundled_script_asset_path("OpenSSH-Win64-v10.0.0.0.msi")
+}
+
+pub fn windows_node_msi_path() -> Option<PathBuf> {
+    bundled_script_asset_path("node-v24.14.0-x64.msi")
 }
 
 pub fn official_install_plan_for_target(
@@ -133,6 +214,14 @@ pub fn install_plans_for_target(
     has_npm: bool,
     has_pnpm: bool,
 ) -> Vec<InstallPlan> {
+    if matches!(target, RuntimeTarget::WindowsNative) {
+        return if prefer_official {
+            vec![windows_native_official_install_plan()]
+        } else {
+            fallback_install_plans_for_target(target, target_profile, has_npm, has_pnpm)
+        };
+    }
+
     let mut plans = Vec::new();
     if prefer_official {
         if let Some(plan) = official_install_plan_for_target(target.clone(), target_profile) {
@@ -156,7 +245,11 @@ pub fn update_plans_for_target(
     has_pnpm: bool,
 ) -> Vec<InstallPlan> {
     if matches!(target, RuntimeTarget::WindowsNative) {
-        return fallback_install_plans_for_target(target, target_profile, has_npm, has_pnpm);
+        return if prefer_official {
+            vec![windows_native_official_install_plan()]
+        } else {
+            fallback_install_plans_for_target(target, target_profile, has_npm, has_pnpm)
+        };
     }
 
     install_plans_for_target(target, target_profile, prefer_official, has_npm, has_pnpm)
@@ -449,6 +542,87 @@ fn listed_wsl_distros() -> Result<Vec<String>> {
         .collect())
 }
 
+fn bundled_script_asset_path(file_name: &str) -> Option<PathBuf> {
+    let candidates = [
+        env::current_dir()
+            .ok()
+            .map(|dir| dir.join("scripts").join(file_name)),
+        env::current_dir().ok().and_then(|dir| {
+            dir.parent()
+                .map(Path::to_path_buf)
+                .map(|parent| parent.join("scripts").join(file_name))
+        }),
+        env::current_exe().ok().and_then(|exe| {
+            exe.parent()
+                .map(Path::to_path_buf)
+                .map(|dir| dir.join("scripts").join(file_name))
+        }),
+        env::current_exe().ok().and_then(|exe| {
+            exe.parent()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+                .map(|dir| dir.join("scripts").join(file_name))
+        }),
+    ];
+
+    candidates.into_iter().flatten().find(|path| path.is_file())
+}
+
+fn windows_node_executable_path() -> Option<PathBuf> {
+    if let Ok(path) = which::which("node") {
+        return Some(path);
+    }
+
+    [
+        env::var_os("ProgramFiles")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("nodejs").join("node.exe")),
+        env::var_os("ProgramFiles(x86)")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("nodejs").join("node.exe")),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|path| path.is_file())
+}
+
+fn windows_native_openclaw_install_env() -> Vec<(String, String)> {
+    let Some(node_dir) =
+        windows_node_executable_path().and_then(|path| path.parent().map(Path::to_path_buf))
+    else {
+        return Vec::new();
+    };
+
+    let current_path = env::var_os("PATH").unwrap_or_default();
+    let node_dir_normalized = node_dir.to_string_lossy().to_ascii_lowercase();
+    let already_present = env::split_paths(&current_path).any(|entry| {
+        entry
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .eq(&node_dir_normalized)
+    });
+    if already_present {
+        return Vec::new();
+    }
+
+    let mut paths = vec![node_dir];
+    paths.extend(env::split_paths(&current_path));
+    let joined = env::join_paths(paths);
+
+    match joined {
+        Ok(path) => vec![("PATH".into(), path.to_string_lossy().into_owned())],
+        Err(_) => Vec::new(),
+    }
+}
+
+fn node_version_satisfies_minimum(version: &str) -> bool {
+    version_segments(version)
+        .first()
+        .copied()
+        .map(|major| major >= WINDOWS_NODE_MIN_MAJOR)
+        .unwrap_or(false)
+}
+
 fn read_first_non_empty_line(output: std::process::Output) -> Option<String> {
     if !output.status.success() {
         return None;
@@ -511,7 +685,9 @@ mod tests {
     use super::{
         compare_versions, default_install_target, fallback_install_plans, install_plans_for_target,
         looks_like_permission_error, macos_ensure_ssh_plan, official_install_plan,
-        preferred_windows_runtime_target, update_plans_for_target, Platform,
+        preferred_windows_runtime_target, update_plans_for_target, windows_native_ensure_node_plan,
+        windows_native_ensure_ssh_plan, windows_node_msi_path, windows_openssh_msi_path, Platform,
+        WINDOWS_NODE_MIN_MAJOR,
     };
     use crate::types::{RuntimeTarget, TargetProfile};
 
@@ -533,9 +709,9 @@ mod tests {
     fn windows_official_plan_uses_wsl_bootstrap() {
         let plan = official_install_plan(Platform::Windows);
 
-        assert_eq!(plan.strategy, "bootstrap-wsl");
-        assert_eq!(plan.program, "wsl.exe");
-        assert!(plan.args.join(" ").contains("--install"));
+        assert_eq!(plan.strategy, "official");
+        assert_eq!(plan.program, "powershell");
+        assert!(plan.args.join(" ").contains("install.ps1"));
     }
 
     #[test]
@@ -580,7 +756,7 @@ mod tests {
         );
         let strategies = plans.iter().map(|plan| plan.strategy).collect::<Vec<_>>();
 
-        assert_eq!(strategies, vec!["official", "npm", "pnpm"]);
+        assert_eq!(strategies, vec!["official"]);
     }
 
     #[test]
@@ -608,6 +784,20 @@ mod tests {
         );
         let strategies = plans.iter().map(|plan| plan.strategy).collect::<Vec<_>>();
 
+        assert_eq!(strategies, vec!["official"]);
+    }
+
+    #[test]
+    fn windows_native_updates_can_fall_back_to_package_managers_when_official_is_disabled() {
+        let plans = update_plans_for_target(
+            RuntimeTarget::WindowsNative,
+            &TargetProfile::default(),
+            false,
+            true,
+            true,
+        );
+        let strategies = plans.iter().map(|plan| plan.strategy).collect::<Vec<_>>();
+
         assert_eq!(strategies, vec!["npm", "pnpm"]);
     }
 
@@ -625,7 +815,7 @@ mod tests {
         );
         assert_eq!(
             default_install_target(Platform::Windows),
-            RuntimeTarget::WindowsWsl
+            RuntimeTarget::WindowsNative
         );
     }
 
@@ -641,8 +831,56 @@ mod tests {
         );
         assert_eq!(
             preferred_windows_runtime_target(false, false),
-            RuntimeTarget::WindowsWsl
+            RuntimeTarget::WindowsNative
         );
+    }
+
+    #[test]
+    fn windows_native_ensure_ssh_plan_installs_openssh_client() {
+        let plan = windows_native_ensure_ssh_plan();
+
+        if windows_openssh_msi_path().is_some() {
+            assert_eq!(plan.strategy, "ensure-ssh-msi");
+            assert_eq!(plan.program, "msiexec.exe");
+            let command = plan.args.join(" ");
+            assert!(command.contains("OpenSSH-Win64-v10.0.0.0.msi"));
+            assert!(command.contains("/qn"));
+        } else {
+            assert_eq!(plan.strategy, "ensure-ssh");
+            assert_eq!(plan.program, "powershell");
+            let command = plan.args.join(" ");
+            assert!(command.contains("OpenSSH.Client"));
+            assert!(!command.contains("ssh-agent"));
+        }
+    }
+
+    #[test]
+    fn detects_bundled_windows_openssh_msi_from_scripts_directory() {
+        let path = windows_openssh_msi_path();
+
+        if let Some(path) = path {
+            assert!(path.ends_with("scripts\\OpenSSH-Win64-v10.0.0.0.msi"));
+        }
+    }
+
+    #[test]
+    fn windows_native_ensure_node_plan_installs_bundled_node_msi() {
+        let plan = windows_native_ensure_node_plan().expect("bundled node msi should be available");
+
+        assert_eq!(plan.strategy, "ensure-node-msi");
+        assert_eq!(plan.program, "msiexec.exe");
+        let command = plan.args.join(" ");
+        assert!(command.contains("node-v24.14.0-x64.msi"));
+        assert!(command.contains("/qn"));
+    }
+
+    #[test]
+    fn detects_bundled_windows_node_msi_from_scripts_directory() {
+        let path = windows_node_msi_path();
+
+        if let Some(path) = path {
+            assert!(path.ends_with("scripts\\node-v24.14.0-x64.msi"));
+        }
     }
 
     #[test]
@@ -650,5 +888,17 @@ mod tests {
         assert!(compare_versions("OpenClaw 2026.3.8", "2026.3.9"));
         assert!(!compare_versions("2026.3.9", "OpenClaw 2026.3.8"));
         assert!(!compare_versions("2026.3.9", "2026.3.9"));
+    }
+
+    #[test]
+    fn compares_node_major_versions_using_numeric_segments() {
+        assert!(super::node_version_satisfies_minimum(&format!(
+            "v{}.0.0",
+            WINDOWS_NODE_MIN_MAJOR
+        )));
+        assert!(!super::node_version_satisfies_minimum(&format!(
+            "v{}.9.9",
+            WINDOWS_NODE_MIN_MAJOR - 1
+        )));
     }
 }

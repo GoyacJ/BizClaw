@@ -25,7 +25,9 @@ use crate::{
         elevated_install_plan, install_plans_for_target, looks_like_permission_error,
         macos_ensure_ssh_plan, read_latest_openclaw_version, read_openclaw_version,
         resolve_runtime_target, target_command_available, update_plans_for_target,
-        wsl_bootstrap_plan, wsl_ensure_ssh_plan, InstallPlan, Platform, MANUAL_INSTALL_URL,
+        windows_local_node_ready, windows_local_node_version, windows_local_ssh_ready,
+        windows_native_ensure_node_plan, windows_native_ensure_ssh_plan, wsl_bootstrap_plan,
+        wsl_ensure_ssh_plan, InstallPlan, Platform, MANUAL_INSTALL_URL, WINDOWS_NODE_MIN_MAJOR,
     },
     operation_supervisor::{
         attach_child, cancel_requested, clear_child, finish_task, new_shared_operation_state,
@@ -578,7 +580,8 @@ fn resolve_environment(
         })
         .unwrap_or(false);
     let target_ssh_installed = match runtime_target {
-        RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => host_ssh_installed,
+        RuntimeTarget::MacNative => host_ssh_installed,
+        RuntimeTarget::WindowsNative => windows_local_ssh_ready(),
         RuntimeTarget::WindowsWsl => {
             target_command_available(RuntimeTarget::WindowsWsl, target_profile, "ssh")
         }
@@ -1117,7 +1120,8 @@ fn run_connection_test(
                 stderr: gateway_result.stderr,
             })
         } else {
-            let error_message = gateway_probe_error_message(locale, gateway_probe.reason.as_deref());
+            let error_message =
+                gateway_probe_error_message(locale, gateway_probe.reason.as_deref());
             emit_connection_test_event(
                 app,
                 ConnectionTestStep::GatewayProbe,
@@ -1464,12 +1468,12 @@ fn install_recommendation(
         RuntimeTarget::WindowsNative => {
             if !target_ssh_installed {
                 if matches!(locale, LocalePreference::EnUs) {
-                    "OpenClaw is installed on Windows and BizClaw will use the local runtime, but local OpenSSH is still required before starting the hosted connection.".into()
+                    "BizClaw will use the local Windows runtime first, but it still needs local OpenSSH to be installed before the hosted connection can start.".into()
                 } else {
                     "已检测到 Windows 本机 OpenClaw，BizClaw 将优先使用本机运行，但在启动托管前仍需要本机 OpenSSH。".into()
                 }
             } else if matches!(locale, LocalePreference::EnUs) {
-                "BizClaw will use the local Windows OpenClaw installation first and update the local installation when npm or pnpm is available.".into()
+                "BizClaw will use the local Windows OpenClaw installation first, and local setup will use the official Windows installer.".into()
             } else {
                 "BizClaw 将优先使用 Windows 本机的 OpenClaw，并在可用时直接更新本机安装。".into()
             }
@@ -1477,7 +1481,7 @@ fn install_recommendation(
         RuntimeTarget::WindowsWsl => {
             if !host_openclaw_installed && !wsl_openclaw_installed {
                 return if matches!(locale, LocalePreference::EnUs) {
-                    "OpenClaw is not installed on Windows or WSL yet. Choose whether to install locally on Windows or let BizClaw prepare WSL Ubuntu first.".into()
+                    "OpenClaw is not installed on Windows or WSL yet. On Windows, BizClaw now recommends installing the local Windows runtime first.".into()
                 } else {
                     "当前尚未在 Windows 本机或 WSL 中检测到 OpenClaw。可以选择直接安装到 Windows 本机，或让 BizClaw 先配置 WSL Ubuntu 再安装。".into()
                 };
@@ -1818,6 +1822,7 @@ fn run_install_or_update(
     if matches!(kind, OperationKind::Install)
         && matches!(runtime_target, RuntimeTarget::WindowsNative)
         && resolved.openclaw_installed
+        && resolved.target_ssh_installed
     {
         return Ok(OperationResult {
             kind,
@@ -1906,7 +1911,7 @@ fn run_install_or_update(
         }
     }
 
-    if !resolved.target_ssh_installed && !matches!(runtime_target, RuntimeTarget::WindowsNative) {
+    if !resolved.target_ssh_installed {
         let snapshot = update_step(operation_state, OperationStep::EnsureSsh);
         emit_operation_status(app, &snapshot);
         if matches!(runtime_target, RuntimeTarget::MacNative) && !command_available("brew") {
@@ -1930,9 +1935,7 @@ fn run_install_or_update(
         }
         let ssh_plan = match runtime_target {
             RuntimeTarget::MacNative => macos_ensure_ssh_plan(),
-            RuntimeTarget::WindowsNative => {
-                unreachable!("windows native does not auto-install ssh")
-            }
+            RuntimeTarget::WindowsNative => windows_native_ensure_ssh_plan(),
             RuntimeTarget::WindowsWsl => wsl_ensure_ssh_plan(&target_profile),
         };
         let ssh_result = run_single_plan(
@@ -1972,8 +1975,10 @@ fn run_install_or_update(
                         "BizClaw 未能通过 Homebrew 自动安装 OpenSSH，请查看输出后重试。",
                         "BizClaw could not install OpenSSH via Homebrew. Check the output and try again.",
                     ),
-                    RuntimeTarget::WindowsNative => unreachable!(
-                        "windows native does not auto-install ssh"
+                    RuntimeTarget::WindowsNative => locale_text(
+                        locale,
+                        "BizClaw 未能自动安装 Windows 本机 OpenSSH，请查看输出后重试，并在系统授权弹窗中允许安装。",
+                        "BizClaw could not install local Windows OpenSSH automatically. Check the output, then retry and allow the Windows elevation prompt to install it.",
                     ),
                     RuntimeTarget::WindowsWsl => locale_text(
                         locale,
@@ -1991,6 +1996,136 @@ fn run_install_or_update(
             false,
             &latest_version_cache,
         );
+        if !resolved.target_ssh_installed {
+            let remediation = remediation_for_failed_plan(request.allow_elevation, &ssh_result);
+            return Ok(OperationResult {
+                kind,
+                strategy: ssh_result.strategy,
+                success: false,
+                step: OperationStep::EnsureSsh,
+                stdout: ssh_result.stdout,
+                stderr: ssh_result.stderr,
+                needs_elevation: ssh_result.needs_elevation,
+                manual_url: MANUAL_INSTALL_URL.into(),
+                follow_up: match runtime_target {
+                    RuntimeTarget::MacNative => locale_text(
+                        locale,
+                        "OpenSSH 安装步骤已执行，但当前仍未检测到 ssh 命令，请检查输出后重试。",
+                        "The OpenSSH install step completed, but the ssh command is still unavailable. Check the output and try again.",
+                    ),
+                    RuntimeTarget::WindowsNative => locale_text(
+                        locale,
+                        "OpenSSH 安装步骤已执行，但当前仍未检测到 ssh 命令。请确认项目内置 MSI 已安装成功，或检查 PATH 后重试。",
+                        "The OpenSSH install step completed, but the ssh command is still unavailable. Confirm the bundled MSI installed successfully, or check PATH and try again.",
+                    ),
+                    RuntimeTarget::WindowsWsl => locale_text(
+                        locale,
+                        "OpenSSH 安装步骤已执行，但 Ubuntu 中仍未检测到 ssh 命令，请检查输出后重试。",
+                        "The OpenSSH install step completed, but ssh is still unavailable inside Ubuntu. Check the output and try again.",
+                    ),
+                }
+                .into(),
+                remediation,
+            });
+        }
+    }
+
+    if matches!(runtime_target, RuntimeTarget::WindowsNative) && !windows_local_node_ready() {
+        let snapshot = update_step(operation_state, OperationStep::EnsureNode);
+        emit_operation_status(app, &snapshot);
+
+        let Some(node_plan) = windows_native_ensure_node_plan() else {
+            return Ok(OperationResult {
+                kind,
+                strategy: "missing-node-msi".into(),
+                success: false,
+                step: OperationStep::EnsureNode,
+                stdout: String::new(),
+                stderr: String::new(),
+                needs_elevation: false,
+                manual_url: MANUAL_INSTALL_URL.into(),
+                follow_up: locale_text(
+                    locale,
+                    "BizClaw 鏈壘鍒伴」鐩唴缃?Node.js 瀹夎鍖呫€傝纭 scripts 鐩綍涓寘鍚?node-v24.14.0-x64.msi锛岀劧鍚庨噸璇曘€?",
+                    "BizClaw could not find the bundled Node.js installer. Make sure scripts/node-v24.14.0-x64.msi is included, then try again.",
+                )
+                .into(),
+                remediation: None,
+            });
+        };
+
+        let node_result = run_single_plan(
+            app,
+            operation_state,
+            locale,
+            kind.clone(),
+            OperationStep::EnsureNode,
+            current_platform()?,
+            request.allow_elevation,
+            &node_plan,
+        )?;
+        if cancel_requested(operation_state) {
+            return Ok(cancelled_result(
+                locale,
+                kind,
+                OperationStep::EnsureNode,
+                node_result.strategy,
+                node_result.stdout,
+                node_result.stderr,
+            ));
+        }
+        if !node_result.success {
+            let remediation = remediation_for_failed_plan(request.allow_elevation, &node_result);
+            return Ok(OperationResult {
+                kind,
+                strategy: node_result.strategy,
+                success: false,
+                step: OperationStep::EnsureNode,
+                stdout: node_result.stdout,
+                stderr: node_result.stderr,
+                needs_elevation: node_result.needs_elevation,
+                manual_url: MANUAL_INSTALL_URL.into(),
+                follow_up: locale_text(
+                    locale,
+                    "BizClaw 鏈兘鑷姩瀹夎 Node.js銆傝鏌ョ湅杈撳嚭鍚庨噸璇曪紝骞跺湪绯荤粺鎺堟潈寮圭獥涓厑璁稿畨瑁呫€?",
+                    "BizClaw could not install Node.js automatically. Check the output, then retry and allow the Windows elevation prompt to continue.",
+                )
+                .into(),
+                remediation,
+            });
+        }
+        if !windows_local_node_ready() {
+            let remediation = remediation_for_failed_plan(request.allow_elevation, &node_result);
+            let detected_version = windows_local_node_version();
+            return Ok(OperationResult {
+                kind,
+                strategy: node_result.strategy,
+                success: false,
+                step: OperationStep::EnsureNode,
+                stdout: node_result.stdout,
+                stderr: node_result.stderr,
+                needs_elevation: node_result.needs_elevation,
+                manual_url: MANUAL_INSTALL_URL.into(),
+                follow_up: locale_owned(
+                    locale,
+                    match detected_version.as_ref() {
+                        Some(version) => format!(
+                            "Node.js 瀹夎姝ラ宸叉墽琛岋紝浣嗗綋鍓嶇増鏈?{} 浠嶄綆浜庤姹?{}+銆傝妫€鏌ヨ緭鍑哄悗閲嶈瘯銆?",
+                            version, WINDOWS_NODE_MIN_MAJOR
+                        ),
+                        None => "Node.js 瀹夎姝ラ宸叉墽琛岋紝浣嗗綋鍓嶄粛鏈娴嬪埌 node 鍛戒护銆傝纭椤圭洰鍐呯疆 MSI 宸插畨瑁呮垚鍔燂紝鎴栨鏌?PATH 鍚庨噸璇曘€?".into(),
+                    },
+                    match detected_version.as_ref() {
+                        Some(version) => format!(
+                            "The Node.js install step completed, but the detected version {} is still below the required {}+. Check the output and try again.",
+                            version, WINDOWS_NODE_MIN_MAJOR
+                        ),
+                        None => "The Node.js install step completed, but the node command is still unavailable. Confirm the bundled MSI installed successfully, or check PATH and try again.".into(),
+                    },
+                ),
+                remediation,
+            });
+        }
     }
 
     if matches!(kind, OperationKind::Update) {

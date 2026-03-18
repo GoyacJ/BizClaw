@@ -719,7 +719,6 @@ export function useAppModel() {
   function shouldPromptWindowsInstallChoice(snapshot: EnvironmentSnapshot | null) {
     return snapshot?.os === 'windows'
       && snapshot.hostOpenclawInstalled === false
-      && snapshot.wslOpenclawInstalled === false
   }
 
   function openInstallRemediationModal(
@@ -894,6 +893,7 @@ export function useAppModel() {
     await runOpenClawOperation('install', {
       preferOfficial: true,
       allowElevation: false,
+      windowsTarget: environment.value?.os === 'windows' ? 'windowsNative' : undefined,
     })
   }
 

@@ -1,3 +1,4 @@
+use crate::install::windows_ssh_executable_path;
 use crate::types::{CompanyProfile, TargetProfile, UserProfile};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,7 +45,10 @@ pub fn build_native_ssh_command(
     args.extend(ssh_forward_args(profile));
 
     CommandSpec {
-        program: "ssh".into(),
+        program: windows_ssh_executable_path()
+            .unwrap_or_else(|| "ssh".into())
+            .to_string_lossy()
+            .into_owned(),
         args,
         envs,
     }

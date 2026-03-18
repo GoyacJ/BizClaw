@@ -566,13 +566,18 @@ fn resolve_environment(
     include_remote_update_check: bool,
     latest_version_cache: &Arc<Mutex<Option<LatestOpenClawVersionCacheEntry>>>,
 ) -> ResolvedEnvironment {
-    let host_ssh_installed = command_available("ssh");
+    let host_ssh_installed = match runtime_target {
+        RuntimeTarget::WindowsNative | RuntimeTarget::WindowsWsl => windows_local_ssh_ready(),
+        RuntimeTarget::MacNative => command_available("ssh"),
+    };
     let host_openclaw_installed = command_available("openclaw");
-    let windows_wsl_status = matches!(
-        runtime_target,
-        RuntimeTarget::WindowsNative | RuntimeTarget::WindowsWsl
-    )
-    .then(|| detect_wsl_status(target_profile));
+    let windows_wsl_status = if matches!(runtime_target, RuntimeTarget::WindowsWsl)
+        || (!host_openclaw_installed && matches!(runtime_target, RuntimeTarget::WindowsNative))
+    {
+        Some(detect_wsl_status(target_profile))
+    } else {
+        None
+    };
     let wsl_openclaw_installed = windows_wsl_status
         .as_ref()
         .map(|status| {

@@ -58,10 +58,17 @@ pub fn preferred_windows_runtime_target(
 pub fn resolve_runtime_target(platform: Platform, target_profile: &TargetProfile) -> RuntimeTarget {
     match platform {
         Platform::MacOs => RuntimeTarget::MacNative,
-        Platform::Windows => preferred_windows_runtime_target(
-            command_available("openclaw"),
-            target_command_available(RuntimeTarget::WindowsWsl, target_profile, "openclaw"),
-        ),
+        Platform::Windows => {
+            let host_openclaw_installed = command_available("openclaw");
+            if host_openclaw_installed {
+                RuntimeTarget::WindowsNative
+            } else {
+                preferred_windows_runtime_target(
+                    host_openclaw_installed,
+                    target_command_available(RuntimeTarget::WindowsWsl, target_profile, "openclaw"),
+                )
+            }
+        }
     }
 }
 
@@ -70,7 +77,7 @@ pub fn command_available(name: &str) -> bool {
 }
 
 pub fn windows_local_ssh_ready() -> bool {
-    command_available("ssh")
+    windows_ssh_executable_path().is_some()
 }
 
 pub fn windows_local_node_ready() -> bool {
@@ -151,22 +158,8 @@ pub fn windows_native_official_install_plan() -> InstallPlan {
 }
 
 pub fn windows_native_ensure_ssh_plan() -> InstallPlan {
-    if let Some(msi_path) = windows_openssh_msi_path() {
-        return InstallPlan {
-            strategy: "ensure-ssh-msi",
-            program: "msiexec.exe".into(),
-            args: vec![
-                "/i".into(),
-                msi_path.to_string_lossy().into_owned(),
-                "/qn".into(),
-                "/norestart".into(),
-            ],
-            envs: Vec::new(),
-        };
-    }
-
     InstallPlan {
-        strategy: "ensure-ssh",
+        strategy: "ensure-ssh-download",
         program: "powershell".into(),
         args: vec![
             "-NoProfile".into(),
@@ -175,10 +168,22 @@ pub fn windows_native_ensure_ssh_plan() -> InstallPlan {
             "-Command".into(),
             concat!(
                 "$ErrorActionPreference='Stop'; ",
-                "$cap = Get-WindowsCapability -Online | Where-Object Name -like 'OpenSSH.Client*' | Select-Object -First 1; ",
-                "if ($null -eq $cap) { throw 'OpenSSH Client capability is unavailable on this Windows image.' }; ",
-                "if ($cap.State -ne 'Installed') { Add-WindowsCapability -Online -Name $cap.Name | Out-Null }; ",
-                "Write-Output 'OpenSSH client installed and ssh command is available.'"
+                "$downloadDir = Join-Path $env:LOCALAPPDATA 'BizClaw\\downloads'; ",
+                "$toolsDir = Join-Path $env:LOCALAPPDATA 'BizClaw\\tools'; ",
+                "New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null; ",
+                "New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null; ",
+                "$headers = @{ 'User-Agent' = 'BizClaw' }; ",
+                "$release = Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/PowerShell/Win32-OpenSSH/releases/latest'; ",
+                "$asset = $release.assets | Where-Object { $_.name -eq 'OpenSSH-Win64.zip' } | Select-Object -First 1; ",
+                "if ($null -eq $asset) { throw 'Could not resolve the latest Win32-OpenSSH Windows x64 archive.' }; ",
+                "$archive = Join-Path $downloadDir $asset.name; ",
+                "if (-not (Test-Path $archive)) { Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile $archive }; ",
+                "$target = Join-Path $toolsDir 'OpenSSH-Win64'; ",
+                "if (Test-Path $target) { Remove-Item -Recurse -Force $target }; ",
+                "Expand-Archive -Path $archive -DestinationPath $toolsDir -Force; ",
+                "$ssh = Join-Path $target 'ssh.exe'; ",
+                "if (-not (Test-Path $ssh)) { throw 'OpenSSH extracted, but ssh.exe is missing.' }; ",
+                "Write-Output ('OpenSSH ready: ' + $ssh)"
             )
             .into(),
         ],
@@ -187,45 +192,60 @@ pub fn windows_native_ensure_ssh_plan() -> InstallPlan {
 }
 
 pub fn windows_native_ensure_node_plan() -> Option<InstallPlan> {
-    let msi_path = windows_node_msi_path()?;
     Some(InstallPlan {
-        strategy: "ensure-node-msi",
-        program: "msiexec.exe".into(),
+        strategy: "ensure-node-download",
+        program: "powershell".into(),
         args: vec![
-            "/i".into(),
-            msi_path.to_string_lossy().into_owned(),
-            "/qn".into(),
-            "/norestart".into(),
+            "-NoProfile".into(),
+            "-ExecutionPolicy".into(),
+            "Bypass".into(),
+            "-Command".into(),
+            concat!(
+                "$ErrorActionPreference='Stop'; ",
+                "$downloadDir = Join-Path $env:LOCALAPPDATA 'BizClaw\\downloads'; ",
+                "New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null; ",
+                "$index = Invoke-RestMethod -Uri 'https://nodejs.org/dist/index.json'; ",
+                "$release = $index | Where-Object { $_.lts -and $_.files -contains 'win-x64-msi' } | Select-Object -First 1; ",
+                "if ($null -eq $release) { throw 'Could not resolve the latest Node.js LTS Windows x64 MSI.' }; ",
+                "$version = $release.version; ",
+                "$fileName = \"node-$version-x64.msi\"; ",
+                "$installer = Join-Path $downloadDir $fileName; ",
+                "if (-not (Test-Path $installer)) { Invoke-WebRequest -Uri (\"https://nodejs.org/dist/\" + $version + \"/\" + $fileName) -OutFile $installer }; ",
+                "Start-Process msiexec.exe -Wait -ArgumentList @('/i', $installer, '/qn', '/norestart'); ",
+                "Write-Output ('Node.js installer ready: ' + $fileName)"
+            )
+            .into(),
         ],
         envs: Vec::new(),
     })
 }
 
 pub fn windows_native_ensure_git_plan() -> Option<InstallPlan> {
-    let exe_path = windows_git_installer_path()?;
     Some(InstallPlan {
-        strategy: "ensure-git-exe",
-        program: exe_path.to_string_lossy().into_owned(),
+        strategy: "ensure-git-download",
+        program: "powershell".into(),
         args: vec![
-            "/VERYSILENT".into(),
-            "/NORESTART".into(),
-            "/NOCANCEL".into(),
-            "/SP-".into(),
+            "-NoProfile".into(),
+            "-ExecutionPolicy".into(),
+            "Bypass".into(),
+            "-Command".into(),
+            concat!(
+                "$ErrorActionPreference='Stop'; ",
+                "$downloadDir = Join-Path $env:LOCALAPPDATA 'BizClaw\\downloads'; ",
+                "New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null; ",
+                "$headers = @{ 'User-Agent' = 'BizClaw' }; ",
+                "$release = Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/git-for-windows/git/releases/latest'; ",
+                "$asset = $release.assets | Where-Object { $_.name -match '^Git-.*-64-bit\\.exe$' } | Select-Object -First 1; ",
+                "if ($null -eq $asset) { throw 'Could not resolve the latest Git for Windows 64-bit installer.' }; ",
+                "$installer = Join-Path $downloadDir $asset.name; ",
+                "if (-not (Test-Path $installer)) { Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile $installer }; ",
+                "Start-Process -FilePath $installer -Wait -ArgumentList @('/VERYSILENT', '/NORESTART', '/NOCANCEL', '/SP-'); ",
+                "Write-Output ('Git installer ready: ' + $asset.name)"
+            )
+            .into(),
         ],
         envs: Vec::new(),
     })
-}
-
-pub fn windows_openssh_msi_path() -> Option<PathBuf> {
-    bundled_script_asset_path("OpenSSH-Win64-v10.0.0.0.msi")
-}
-
-pub fn windows_node_msi_path() -> Option<PathBuf> {
-    bundled_script_asset_path("node-v24.14.0-x64.msi")
-}
-
-pub fn windows_git_installer_path() -> Option<PathBuf> {
-    bundled_script_asset_path("Git-2.53.0.2-64-bit.exe")
 }
 
 pub fn official_install_plan_for_target(
@@ -575,32 +595,6 @@ fn listed_wsl_distros() -> Result<Vec<String>> {
         .collect())
 }
 
-fn bundled_script_asset_path(file_name: &str) -> Option<PathBuf> {
-    let candidates = [
-        env::current_dir()
-            .ok()
-            .map(|dir| dir.join("scripts").join(file_name)),
-        env::current_dir().ok().and_then(|dir| {
-            dir.parent()
-                .map(Path::to_path_buf)
-                .map(|parent| parent.join("scripts").join(file_name))
-        }),
-        env::current_exe().ok().and_then(|exe| {
-            exe.parent()
-                .map(Path::to_path_buf)
-                .map(|dir| dir.join("scripts").join(file_name))
-        }),
-        env::current_exe().ok().and_then(|exe| {
-            exe.parent()
-                .and_then(Path::parent)
-                .map(Path::to_path_buf)
-                .map(|dir| dir.join("scripts").join(file_name))
-        }),
-    ];
-
-    candidates.into_iter().flatten().find(|path| path.is_file())
-}
-
 fn windows_node_executable_path() -> Option<PathBuf> {
     if let Ok(path) = which::which("node") {
         return Some(path);
@@ -613,6 +607,30 @@ fn windows_node_executable_path() -> Option<PathBuf> {
         env::var_os("ProgramFiles(x86)")
             .map(PathBuf::from)
             .map(|dir| dir.join("nodejs").join("node.exe")),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|path| path.is_file())
+}
+
+pub fn windows_ssh_executable_path() -> Option<PathBuf> {
+    if let Ok(path) = which::which("ssh") {
+        return Some(path);
+    }
+
+    [
+        env::var_os("ProgramFiles")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("OpenSSH").join("ssh.exe")),
+        env::var_os("WINDIR")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("System32").join("OpenSSH").join("ssh.exe")),
+        env::var_os("LocalAppData").map(PathBuf::from).map(|dir| {
+            dir.join("BizClaw")
+                .join("tools")
+                .join("OpenSSH-Win64")
+                .join("ssh.exe")
+        }),
     ]
     .into_iter()
     .flatten()
@@ -646,6 +664,11 @@ fn windows_git_executable_path() -> Option<PathBuf> {
 fn windows_native_openclaw_install_env() -> Vec<(String, String)> {
     let current_path = env::var_os("PATH").unwrap_or_default();
     let mut paths = Vec::new();
+    append_path_if_missing(
+        &mut paths,
+        &current_path,
+        windows_ssh_executable_path().and_then(|path| path.parent().map(Path::to_path_buf)),
+    );
     append_path_if_missing(
         &mut paths,
         &current_path,
@@ -766,9 +789,8 @@ mod tests {
     use super::{
         compare_versions, default_install_target, fallback_install_plans, install_plans_for_target,
         looks_like_permission_error, macos_ensure_ssh_plan, official_install_plan,
-        preferred_windows_runtime_target, update_plans_for_target, windows_git_installer_path,
-        windows_native_ensure_git_plan, windows_native_ensure_node_plan,
-        windows_native_ensure_ssh_plan, windows_node_msi_path, windows_openssh_msi_path, Platform,
+        preferred_windows_runtime_target, update_plans_for_target, windows_native_ensure_git_plan,
+        windows_native_ensure_node_plan, windows_native_ensure_ssh_plan, Platform,
         WINDOWS_NODE_MIN_MAJOR,
     };
     use crate::types::{RuntimeTarget, TargetProfile};
@@ -921,72 +943,37 @@ mod tests {
     fn windows_native_ensure_ssh_plan_installs_openssh_client() {
         let plan = windows_native_ensure_ssh_plan();
 
-        if windows_openssh_msi_path().is_some() {
-            assert_eq!(plan.strategy, "ensure-ssh-msi");
-            assert_eq!(plan.program, "msiexec.exe");
-            let command = plan.args.join(" ");
-            assert!(command.contains("OpenSSH-Win64-v10.0.0.0.msi"));
-            assert!(command.contains("/qn"));
-        } else {
-            assert_eq!(plan.strategy, "ensure-ssh");
-            assert_eq!(plan.program, "powershell");
-            let command = plan.args.join(" ");
-            assert!(command.contains("OpenSSH.Client"));
-            assert!(!command.contains("ssh-agent"));
-        }
-    }
-
-    #[test]
-    fn detects_bundled_windows_openssh_msi_from_scripts_directory() {
-        let path = windows_openssh_msi_path();
-
-        if let Some(path) = path {
-            let normalized = path.to_string_lossy().replace('\\', "/");
-            assert!(normalized.ends_with("scripts/OpenSSH-Win64-v10.0.0.0.msi"));
-        }
-    }
-
-    #[test]
-    fn windows_native_ensure_node_plan_installs_bundled_node_msi() {
-        let plan = windows_native_ensure_node_plan().expect("bundled node msi should be available");
-
-        assert_eq!(plan.strategy, "ensure-node-msi");
-        assert_eq!(plan.program, "msiexec.exe");
+        assert_eq!(plan.strategy, "ensure-ssh-download");
+        assert_eq!(plan.program, "powershell");
         let command = plan.args.join(" ");
-        assert!(command.contains("node-v24.14.0-x64.msi"));
-        assert!(command.contains("/qn"));
+        assert!(command.contains("Win32-OpenSSH/releases/latest"));
+        assert!(command.contains("OpenSSH-Win64.zip"));
+        assert!(command.contains("Expand-Archive"));
     }
 
     #[test]
-    fn windows_native_ensure_git_plan_installs_bundled_git_exe() {
-        let plan =
-            windows_native_ensure_git_plan().expect("bundled git installer should be available");
+    fn windows_native_ensure_node_plan_downloads_latest_node_lts_msi() {
+        let plan = windows_native_ensure_node_plan().expect("node install plan");
 
-        assert_eq!(plan.strategy, "ensure-git-exe");
-        assert!(plan.program.contains("Git-2.53.0.2-64-bit.exe"));
+        assert_eq!(plan.strategy, "ensure-node-download");
+        assert_eq!(plan.program, "powershell");
         let command = plan.args.join(" ");
+        assert!(command.contains("https://nodejs.org/dist/index.json"));
+        assert!(command.contains("win-x64-msi"));
+        assert!(command.contains("msiexec.exe"));
+    }
+
+    #[test]
+    fn windows_native_ensure_git_plan_downloads_latest_git_windows_exe() {
+        let plan = windows_native_ensure_git_plan().expect("git install plan");
+
+        assert_eq!(plan.strategy, "ensure-git-download");
+        assert_eq!(plan.program, "powershell");
+        let command = plan.args.join(" ");
+        assert!(command.contains("git-for-windows/git/releases/latest"));
+        assert!(command.contains("64-bit"));
         assert!(command.contains("/VERYSILENT"));
         assert!(command.contains("/SP-"));
-    }
-
-    #[test]
-    fn detects_bundled_windows_node_msi_from_scripts_directory() {
-        let path = windows_node_msi_path();
-
-        if let Some(path) = path {
-            let normalized = path.to_string_lossy().replace('\\', "/");
-            assert!(normalized.ends_with("scripts/node-v24.14.0-x64.msi"));
-        }
-    }
-
-    #[test]
-    fn detects_bundled_windows_git_installer_from_scripts_directory() {
-        let path = windows_git_installer_path();
-
-        if let Some(path) = path {
-            let normalized = path.to_string_lossy().replace('\\', "/");
-            assert!(normalized.ends_with("scripts/Git-2.53.0.2-64-bit.exe"));
-        }
     }
 
     #[test]

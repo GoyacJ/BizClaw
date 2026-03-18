@@ -79,6 +79,8 @@ export function operationStepLabel(step: OperationStep): string {
       return translate('runtime.operationStep.ensureSsh')
     case 'ensureNode':
       return translate('runtime.operationStep.ensureNode')
+    case 'ensureGit':
+      return translate('runtime.operationStep.ensureGit')
     case 'installOpenClaw':
       return translate('runtime.operationStep.installOpenClaw')
     case 'checkUpdate':

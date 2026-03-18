@@ -846,6 +846,58 @@ describe('useAppModel', () => {
     expect(model.windowsInstallChoiceModalOpen.value).toBe(false)
   })
 
+  it('skips the Windows install choice modal when WSL already has OpenClaw installed', async () => {
+    apiMocks.detectEnvironment.mockResolvedValue(createSnapshot({
+      os: 'windows',
+      runtimeTarget: 'windowsWsl',
+      openclawInstalled: true,
+      hostOpenclawInstalled: false,
+      wslOpenclawInstalled: true,
+      wslStatus: {
+        available: true,
+        distroName: 'Ubuntu',
+        distroInstalled: true,
+        ready: true,
+        needsReboot: false,
+        message: null,
+      },
+    }))
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.installOpenClaw.mockResolvedValue(createIdleTask())
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.21')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+    await model.installCli()
+    await flushPromises()
+
+    expect(model.windowsInstallChoiceModalOpen.value).toBe(false)
+    expect(apiMocks.installOpenClaw).toHaveBeenCalledWith({
+      preferOfficial: true,
+      allowElevation: false,
+    })
+  })
+
   it('guides Homebrew installation and retries the update after the user asks to continue', async () => {
     apiMocks.detectEnvironment
       .mockResolvedValueOnce(createSnapshot({

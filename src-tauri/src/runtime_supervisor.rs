@@ -353,13 +353,42 @@ fn spawn_log_reader(
         let reader = BufReader::new(reader);
         for line in reader.lines() {
             let Ok(line) = line else { break };
-            let line = line.trim();
-            if line.is_empty() {
+            let Some(line) = sanitize_runtime_log_line(&line) else {
                 continue;
-            }
-            append_log(&state, &app, source, level, line.to_string());
+            };
+            append_log(&state, &app, source, level, line);
         }
     });
+}
+
+fn sanitize_runtime_log_line(line: &str) -> Option<String> {
+    let mut cleaned: String = line
+        .chars()
+        .filter(|ch| *ch == '\t' || !ch.is_control())
+        .collect();
+    cleaned = cleaned.trim().to_string();
+    if cleaned.is_empty() {
+        return None;
+    }
+
+    let without_spinner_prefix = cleaned
+        .trim_start_matches(|ch: char| matches!(ch, '-' | '\\' | '|' | '/' | ' ' | '\t'))
+        .trim()
+        .to_string();
+    let candidate = if without_spinner_prefix.is_empty() {
+        cleaned
+    } else {
+        without_spinner_prefix
+    };
+
+    if candidate
+        .chars()
+        .all(|ch| matches!(ch, '-' | '\\' | '|' | '/' | ' '))
+    {
+        return None;
+    }
+
+    Some(candidate)
 }
 
 fn ensure_process_alive(

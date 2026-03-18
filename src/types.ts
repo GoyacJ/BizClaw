@@ -169,6 +169,7 @@ export type OperationStep =
   | 'bootstrapWsl'
   | 'ensureSsh'
   | 'ensureNode'
+  | 'ensureGit'
   | 'installOpenClaw'
   | 'checkUpdate'
   | 'updateOpenClaw'

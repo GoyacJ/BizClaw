@@ -25,7 +25,8 @@ use crate::{
         elevated_install_plan, install_plans_for_target, looks_like_permission_error,
         macos_ensure_ssh_plan, read_latest_openclaw_version, read_openclaw_version,
         resolve_runtime_target, target_command_available, update_plans_for_target,
-        windows_local_node_ready, windows_local_node_version, windows_local_ssh_ready,
+        windows_local_git_ready, windows_local_git_version, windows_local_node_ready,
+        windows_local_node_version, windows_local_ssh_ready, windows_native_ensure_git_plan,
         windows_native_ensure_node_plan, windows_native_ensure_ssh_plan, wsl_bootstrap_plan,
         wsl_ensure_ssh_plan, InstallPlan, Platform, MANUAL_INSTALL_URL, WINDOWS_NODE_MIN_MAJOR,
     },
@@ -1481,7 +1482,7 @@ fn install_recommendation(
         RuntimeTarget::WindowsWsl => {
             if !host_openclaw_installed && !wsl_openclaw_installed {
                 return if matches!(locale, LocalePreference::EnUs) {
-                    "OpenClaw is not installed on Windows or WSL yet. On Windows, BizClaw now recommends installing the local Windows runtime first.".into()
+                    "OpenClaw is not installed on Windows or WSL yet. On Windows, BizClaw now installs locally first, while WSL is kept only for existing installations.".into()
                 } else {
                     "当前尚未在 Windows 本机或 WSL 中检测到 OpenClaw。可以选择直接安装到 Windows 本机，或让 BizClaw 先配置 WSL Ubuntu 再安装。".into()
                 };
@@ -2128,6 +2129,104 @@ fn run_install_or_update(
         }
     }
 
+    if matches!(runtime_target, RuntimeTarget::WindowsNative) && !windows_local_git_ready() {
+        let snapshot = update_step(operation_state, OperationStep::EnsureGit);
+        emit_operation_status(app, &snapshot);
+
+        let Some(git_plan) = windows_native_ensure_git_plan() else {
+            return Ok(OperationResult {
+                kind,
+                strategy: "missing-git-installer".into(),
+                success: false,
+                step: OperationStep::EnsureGit,
+                stdout: String::new(),
+                stderr: String::new(),
+                needs_elevation: false,
+                manual_url: MANUAL_INSTALL_URL.into(),
+                follow_up: locale_text(
+                    locale,
+                    "BizClaw 未找到项目内置的 Git 安装包。请确认 scripts 目录中包含 Git-2.53.0.2-64-bit.exe，然后重试。",
+                    "BizClaw could not find the bundled Git installer. Make sure scripts/Git-2.53.0.2-64-bit.exe is included, then try again.",
+                )
+                .into(),
+                remediation: None,
+            });
+        };
+
+        let git_result = run_single_plan(
+            app,
+            operation_state,
+            locale,
+            kind.clone(),
+            OperationStep::EnsureGit,
+            current_platform()?,
+            request.allow_elevation,
+            &git_plan,
+        )?;
+        if cancel_requested(operation_state) {
+            return Ok(cancelled_result(
+                locale,
+                kind,
+                OperationStep::EnsureGit,
+                git_result.strategy,
+                git_result.stdout,
+                git_result.stderr,
+            ));
+        }
+        if !git_result.success {
+            let remediation = remediation_for_failed_plan(request.allow_elevation, &git_result);
+            return Ok(OperationResult {
+                kind,
+                strategy: git_result.strategy,
+                success: false,
+                step: OperationStep::EnsureGit,
+                stdout: git_result.stdout,
+                stderr: git_result.stderr,
+                needs_elevation: git_result.needs_elevation,
+                manual_url: MANUAL_INSTALL_URL.into(),
+                follow_up: locale_text(
+                    locale,
+                    "BizClaw 未能自动安装 Git。请查看输出后重试，并在系统授权弹窗中允许安装。",
+                    "BizClaw could not install Git automatically. Check the output, then retry and allow the Windows elevation prompt to continue.",
+                )
+                .into(),
+                remediation,
+            });
+        }
+        if !windows_local_git_ready() {
+            let remediation = remediation_for_failed_plan(request.allow_elevation, &git_result);
+            let detected_version = windows_local_git_version();
+            return Ok(OperationResult {
+                kind,
+                strategy: git_result.strategy,
+                success: false,
+                step: OperationStep::EnsureGit,
+                stdout: git_result.stdout,
+                stderr: git_result.stderr,
+                needs_elevation: git_result.needs_elevation,
+                manual_url: MANUAL_INSTALL_URL.into(),
+                follow_up: locale_owned(
+                    locale,
+                    match detected_version.as_ref() {
+                        Some(version) => format!(
+                            "Git 安装步骤已执行，但当前检测到的版本仍异常：{}。请检查输出后重试。",
+                            version
+                        ),
+                        None => "Git 安装步骤已执行，但当前仍未检测到 git 命令。请确认项目内置安装包已安装成功，或检查 PATH 后重试。".into(),
+                    },
+                    match detected_version.as_ref() {
+                        Some(version) => format!(
+                            "The Git install step completed, but the detected version still looks wrong: {}. Check the output and try again.",
+                            version
+                        ),
+                        None => "The Git install step completed, but the git command is still unavailable. Confirm the bundled installer completed successfully, or check PATH and try again.".into(),
+                    },
+                ),
+                remediation,
+            });
+        }
+    }
+
     if matches!(kind, OperationKind::Update) {
         resolved = resolve_environment(
             runtime_target.clone(),
@@ -2570,6 +2669,9 @@ fn execute_plan_streaming(
 
     while exit_status.is_none() {
         while let Ok((source, message)) = rx.recv_timeout(Duration::from_millis(50)) {
+            let Some(message) = sanitize_operation_log_line(&message) else {
+                continue;
+            };
             match source {
                 OperationEventSource::Stdout => {
                     stdout_buffer.push_str(&message);
@@ -2603,6 +2705,9 @@ fn execute_plan_streaming(
     }
 
     while let Ok((source, message)) = rx.try_recv() {
+        let Some(message) = sanitize_operation_log_line(&message) else {
+            continue;
+        };
         match source {
             OperationEventSource::Stdout => {
                 stdout_buffer.push_str(&message);
@@ -2681,12 +2786,41 @@ fn read_stream(
     let reader = BufReader::new(reader);
     for line in reader.lines() {
         let Ok(line) = line else { break };
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+        let Some(sanitized) = sanitize_operation_log_line(&line) else {
             continue;
-        }
-        let _ = tx.send((source.clone(), trimmed.to_string()));
+        };
+        let _ = tx.send((source.clone(), sanitized));
     }
+}
+
+fn sanitize_operation_log_line(line: &str) -> Option<String> {
+    let mut cleaned: String = line
+        .chars()
+        .filter(|ch| *ch == '\t' || !ch.is_control())
+        .collect();
+    cleaned = cleaned.trim().to_string();
+    if cleaned.is_empty() {
+        return None;
+    }
+
+    let without_spinner_prefix = cleaned
+        .trim_start_matches(|ch: char| matches!(ch, '-' | '\\' | '|' | '/' | ' ' | '\t'))
+        .trim()
+        .to_string();
+    let candidate = if without_spinner_prefix.is_empty() {
+        cleaned
+    } else {
+        without_spinner_prefix
+    };
+
+    if candidate
+        .chars()
+        .all(|ch| matches!(ch, '-' | '\\' | '|' | '/' | ' '))
+    {
+        return None;
+    }
+
+    Some(candidate)
 }
 
 fn emit_operation_event(
@@ -3133,7 +3267,7 @@ mod tests {
         assert_eq!(snapshot.ui_preferences.locale, LocalePreference::EnUs);
         assert_eq!(
             snapshot.install_recommendation,
-            "OpenClaw is not installed on Windows or WSL yet. On Windows, BizClaw now recommends installing the local Windows runtime first."
+            "OpenClaw is not installed on Windows or WSL yet. On Windows, BizClaw now installs locally first, while WSL is kept only for existing installations."
         );
     }
 

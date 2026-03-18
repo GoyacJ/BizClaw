@@ -1,7 +1,6 @@
 use std::{
     env,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use anyhow::{anyhow, Result};
@@ -83,7 +82,21 @@ pub fn windows_local_node_ready() -> bool {
 
 pub fn windows_local_node_version() -> Option<String> {
     let node_program = windows_node_executable_path()?;
-    let output = Command::new(node_program).arg("--version").output().ok()?;
+    let output = new_command(&node_program.to_string_lossy(), &["--version".into()])
+        .output()
+        .ok()?;
+    read_first_non_empty_line(output)
+}
+
+pub fn windows_local_git_ready() -> bool {
+    windows_local_git_version().is_some()
+}
+
+pub fn windows_local_git_version() -> Option<String> {
+    let git_program = windows_git_executable_path()?;
+    let output = new_command(&git_program.to_string_lossy(), &["--version".into()])
+        .output()
+        .ok()?;
     read_first_non_empty_line(output)
 }
 
@@ -188,12 +201,31 @@ pub fn windows_native_ensure_node_plan() -> Option<InstallPlan> {
     })
 }
 
+pub fn windows_native_ensure_git_plan() -> Option<InstallPlan> {
+    let exe_path = windows_git_installer_path()?;
+    Some(InstallPlan {
+        strategy: "ensure-git-exe",
+        program: exe_path.to_string_lossy().into_owned(),
+        args: vec![
+            "/VERYSILENT".into(),
+            "/NORESTART".into(),
+            "/NOCANCEL".into(),
+            "/SP-".into(),
+        ],
+        envs: Vec::new(),
+    })
+}
+
 pub fn windows_openssh_msi_path() -> Option<PathBuf> {
     bundled_script_asset_path("OpenSSH-Win64-v10.0.0.0.msi")
 }
 
 pub fn windows_node_msi_path() -> Option<PathBuf> {
     bundled_script_asset_path("node-v24.14.0-x64.msi")
+}
+
+pub fn windows_git_installer_path() -> Option<PathBuf> {
+    bundled_script_asset_path("Git-2.53.0.2-64-bit.exe")
 }
 
 pub fn official_install_plan_for_target(
@@ -512,24 +544,25 @@ pub fn run_wsl_command(
     target_profile: &TargetProfile,
     shell_payload: &str,
 ) -> Result<std::process::Output> {
-    Command::new("wsl.exe")
-        .args([
-            "-d",
-            target_profile.wsl_distro.as_str(),
-            "--",
-            "bash",
-            "-lc",
-            shell_payload,
-        ])
-        .output()
-        .map_err(Into::into)
+    new_command(
+        "wsl.exe",
+        &[
+            "-d".into(),
+            target_profile.wsl_distro.clone(),
+            "--".into(),
+            "bash".into(),
+            "-lc".into(),
+            shell_payload.into(),
+        ],
+    )
+    .output()
+    .map_err(Into::into)
 }
 
 fn listed_wsl_distros() -> Result<Vec<String>> {
-    let output = Command::new("wsl.exe")
-        .args(["-l", "-q"])
+    let output = new_command("wsl.exe", &["-l".into(), "-q".into()])
         .output()
-        .or_else(|_| Command::new("wsl").args(["-l", "-q"]).output())?;
+        .or_else(|_| new_command("wsl", &["-l".into(), "-q".into()]).output())?;
     if !output.status.success() {
         return Ok(Vec::new());
     }
@@ -586,26 +619,48 @@ fn windows_node_executable_path() -> Option<PathBuf> {
     .find(|path| path.is_file())
 }
 
-fn windows_native_openclaw_install_env() -> Vec<(String, String)> {
-    let Some(node_dir) =
-        windows_node_executable_path().and_then(|path| path.parent().map(Path::to_path_buf))
-    else {
-        return Vec::new();
-    };
+fn windows_git_executable_path() -> Option<PathBuf> {
+    if let Ok(path) = which::which("git") {
+        return Some(path);
+    }
 
+    [
+        env::var_os("ProgramFiles")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("Git").join("cmd").join("git.exe")),
+        env::var_os("ProgramFiles")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("Git").join("bin").join("git.exe")),
+        env::var_os("LocalAppData")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("Programs").join("Git").join("cmd").join("git.exe")),
+        env::var_os("LocalAppData")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("Programs").join("Git").join("bin").join("git.exe")),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|path| path.is_file())
+}
+
+fn windows_native_openclaw_install_env() -> Vec<(String, String)> {
     let current_path = env::var_os("PATH").unwrap_or_default();
-    let node_dir_normalized = node_dir.to_string_lossy().to_ascii_lowercase();
-    let already_present = env::split_paths(&current_path).any(|entry| {
-        entry
-            .to_string_lossy()
-            .to_ascii_lowercase()
-            .eq(&node_dir_normalized)
-    });
-    if already_present {
+    let mut paths = Vec::new();
+    append_path_if_missing(
+        &mut paths,
+        &current_path,
+        windows_node_executable_path().and_then(|path| path.parent().map(Path::to_path_buf)),
+    );
+    append_path_if_missing(
+        &mut paths,
+        &current_path,
+        windows_git_executable_path().and_then(|path| path.parent().map(Path::to_path_buf)),
+    );
+
+    if paths.is_empty() {
         return Vec::new();
     }
 
-    let mut paths = vec![node_dir];
     paths.extend(env::split_paths(&current_path));
     let joined = env::join_paths(paths);
 
@@ -621,6 +676,32 @@ fn node_version_satisfies_minimum(version: &str) -> bool {
         .copied()
         .map(|major| major >= WINDOWS_NODE_MIN_MAJOR)
         .unwrap_or(false)
+}
+
+fn append_path_if_missing(
+    paths: &mut Vec<PathBuf>,
+    current_path: &std::ffi::OsStr,
+    candidate: Option<PathBuf>,
+) {
+    let Some(candidate) = candidate else {
+        return;
+    };
+    let candidate_normalized = candidate.to_string_lossy().to_ascii_lowercase();
+    let already_present = env::split_paths(current_path).any(|entry| {
+        entry
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .eq(&candidate_normalized)
+    });
+    let already_queued = paths.iter().any(|entry| {
+        entry
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .eq(&candidate_normalized)
+    });
+    if !already_present && !already_queued {
+        paths.push(candidate);
+    }
 }
 
 fn read_first_non_empty_line(output: std::process::Output) -> Option<String> {
@@ -685,7 +766,8 @@ mod tests {
     use super::{
         compare_versions, default_install_target, fallback_install_plans, install_plans_for_target,
         looks_like_permission_error, macos_ensure_ssh_plan, official_install_plan,
-        preferred_windows_runtime_target, update_plans_for_target, windows_native_ensure_node_plan,
+        preferred_windows_runtime_target, update_plans_for_target, windows_git_installer_path,
+        windows_native_ensure_git_plan, windows_native_ensure_node_plan,
         windows_native_ensure_ssh_plan, windows_node_msi_path, windows_openssh_msi_path, Platform,
         WINDOWS_NODE_MIN_MAJOR,
     };
@@ -876,12 +958,34 @@ mod tests {
     }
 
     #[test]
+    fn windows_native_ensure_git_plan_installs_bundled_git_exe() {
+        let plan =
+            windows_native_ensure_git_plan().expect("bundled git installer should be available");
+
+        assert_eq!(plan.strategy, "ensure-git-exe");
+        assert!(plan.program.contains("Git-2.53.0.2-64-bit.exe"));
+        let command = plan.args.join(" ");
+        assert!(command.contains("/VERYSILENT"));
+        assert!(command.contains("/SP-"));
+    }
+
+    #[test]
     fn detects_bundled_windows_node_msi_from_scripts_directory() {
         let path = windows_node_msi_path();
 
         if let Some(path) = path {
             let normalized = path.to_string_lossy().replace('\\', "/");
             assert!(normalized.ends_with("scripts/node-v24.14.0-x64.msi"));
+        }
+    }
+
+    #[test]
+    fn detects_bundled_windows_git_installer_from_scripts_directory() {
+        let path = windows_git_installer_path();
+
+        if let Some(path) = path {
+            let normalized = path.to_string_lossy().replace('\\', "/");
+            assert!(normalized.ends_with("scripts/Git-2.53.0.2-64-bit.exe"));
         }
     }
 

@@ -263,6 +263,7 @@ pub enum OperationStep {
     BootstrapWsl,
     EnsureSsh,
     EnsureNode,
+    EnsureGit,
     InstallOpenClaw,
     CheckUpdate,
     UpdateOpenClaw,

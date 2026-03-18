@@ -4,6 +4,9 @@ use std::{
     process::Command,
 };
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedCommand {
     pub program: String,
@@ -59,6 +62,8 @@ pub fn new_command(program: &str, args: &[String]) -> Command {
     let prepared = prepare_command_for_current_platform(program, args);
     let mut command = Command::new(&prepared.program);
     command.args(&prepared.args);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
     command
 }
 

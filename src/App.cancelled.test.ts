@@ -112,6 +112,7 @@ vi.mock('@/lib/use-app-model', () => {
       environment,
       installBusyAction: ref<string | null>(null),
       installCli: vi.fn(),
+      installWslCli: vi.fn(),
       installBizClawUpdate: vi.fn(),
       installRemediationModal: reactive({
         open: false,

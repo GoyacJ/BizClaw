@@ -59,7 +59,7 @@ pub fn resolve_runtime_target(platform: Platform, target_profile: &TargetProfile
     match platform {
         Platform::MacOs => RuntimeTarget::MacNative,
         Platform::Windows => {
-            let host_openclaw_installed = command_available("openclaw");
+            let host_openclaw_installed = windows_local_openclaw_ready();
             if host_openclaw_installed {
                 RuntimeTarget::WindowsNative
             } else {
@@ -107,13 +107,32 @@ pub fn windows_local_git_version() -> Option<String> {
     read_first_non_empty_line(output)
 }
 
+pub fn windows_local_openclaw_ready() -> bool {
+    windows_local_openclaw_version().is_some()
+}
+
+pub fn windows_local_openclaw_version() -> Option<String> {
+    let openclaw_program = windows_openclaw_executable_path()?;
+    let output = new_command(&openclaw_program.to_string_lossy(), &["--version".into()])
+        .output()
+        .ok()?;
+    read_first_non_empty_line(output)
+}
+
 pub fn target_command_available(
     target: RuntimeTarget,
     target_profile: &TargetProfile,
     name: &str,
 ) -> bool {
     match target {
-        RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => command_available(name),
+        RuntimeTarget::MacNative => command_available(name),
+        RuntimeTarget::WindowsNative => {
+            if name.eq_ignore_ascii_case("openclaw") {
+                windows_local_openclaw_ready()
+            } else {
+                command_available(name)
+            }
+        }
         RuntimeTarget::WindowsWsl => {
             let status = detect_wsl_status(target_profile);
             status.ready
@@ -168,6 +187,12 @@ pub fn windows_native_ensure_ssh_plan() -> InstallPlan {
             "-Command".into(),
             concat!(
                 "$ErrorActionPreference='Stop'; ",
+                "$capability = Get-WindowsCapability -Online | Where-Object { $_.Name -like 'OpenSSH.Client*' } | Select-Object -First 1; ",
+                "if ($null -ne $capability) { ",
+                "  if ($capability.State -ne 'Installed') { Add-WindowsCapability -Online -Name $capability.Name | Out-Null }; ",
+                "  $capabilitySsh = Join-Path $env:WINDIR 'System32\\OpenSSH\\ssh.exe'; ",
+                "  if (Test-Path $capabilitySsh) { Write-Output ('OpenSSH ready: ' + $capabilitySsh); exit 0 } ",
+                "} ",
                 "$downloadDir = Join-Path $env:LOCALAPPDATA 'BizClaw\\downloads'; ",
                 "$toolsDir = Join-Path $env:LOCALAPPDATA 'BizClaw\\tools'; ",
                 "New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null; ",
@@ -183,6 +208,12 @@ pub fn windows_native_ensure_ssh_plan() -> InstallPlan {
                 "Expand-Archive -Path $archive -DestinationPath $toolsDir -Force; ",
                 "$ssh = Join-Path $target 'ssh.exe'; ",
                 "if (-not (Test-Path $ssh)) { throw 'OpenSSH extracted, but ssh.exe is missing.' }; ",
+                "$userPath = [Environment]::GetEnvironmentVariable('Path', 'User'); ",
+                "if ([string]::IsNullOrWhiteSpace($userPath)) { ",
+                "  [Environment]::SetEnvironmentVariable('Path', $target, 'User') ",
+                "} elseif (-not (($userPath -split ';') | Where-Object { $_ -eq $target })) { ",
+                "  [Environment]::SetEnvironmentVariable('Path', ($target + ';' + $userPath), 'User') ",
+                "} ",
                 "Write-Output ('OpenSSH ready: ' + $ssh)"
             )
             .into(),
@@ -433,8 +464,14 @@ pub fn read_openclaw_version(
     target_profile: &TargetProfile,
 ) -> Option<String> {
     read_first_non_empty_line(match target {
-        RuntimeTarget::MacNative | RuntimeTarget::WindowsNative => {
+        RuntimeTarget::MacNative => {
             new_command("openclaw", &["--version".into()])
+                .output()
+                .ok()?
+        }
+        RuntimeTarget::WindowsNative => {
+            let openclaw_program = windows_openclaw_executable_path()?;
+            new_command(&openclaw_program.to_string_lossy(), &["--version".into()])
                 .output()
                 .ok()?
         }
@@ -659,6 +696,38 @@ fn windows_git_executable_path() -> Option<PathBuf> {
     .into_iter()
     .flatten()
     .find(|path| path.is_file())
+}
+
+fn windows_openclaw_executable_path() -> Option<PathBuf> {
+    if let Ok(path) = which::which("openclaw") {
+        return Some(path);
+    }
+
+    let output = new_command(
+        "powershell",
+        &[
+            "-NoProfile".into(),
+            "-ExecutionPolicy".into(),
+            "Bypass".into(),
+            "-Command".into(),
+            concat!(
+                "$machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine'); ",
+                "$userPath = [Environment]::GetEnvironmentVariable('Path', 'User'); ",
+                "$paths = @(); ",
+                "if (-not [string]::IsNullOrWhiteSpace($machinePath)) { $paths += $machinePath }; ",
+                "if (-not [string]::IsNullOrWhiteSpace($userPath)) { $paths += $userPath }; ",
+                "if ($paths.Count -gt 0) { $env:Path = ($paths -join ';') }; ",
+                "$command = Get-Command openclaw.cmd -ErrorAction SilentlyContinue; ",
+                "if ($null -eq $command) { $command = Get-Command openclaw -ErrorAction SilentlyContinue }; ",
+                "if ($null -ne $command) { Write-Output $command.Source }"
+            )
+            .into(),
+        ],
+    )
+    .output()
+    .ok()?;
+
+    read_first_non_empty_line(output).map(PathBuf::from)
 }
 
 fn windows_native_openclaw_install_env() -> Vec<(String, String)> {
@@ -940,15 +1009,18 @@ mod tests {
     }
 
     #[test]
-    fn windows_native_ensure_ssh_plan_installs_openssh_client() {
+    fn windows_native_ensure_ssh_plan_prefers_windows_capability_and_keeps_zip_fallback() {
         let plan = windows_native_ensure_ssh_plan();
 
         assert_eq!(plan.strategy, "ensure-ssh-download");
         assert_eq!(plan.program, "powershell");
         let command = plan.args.join(" ");
+        assert!(command.contains("Get-WindowsCapability"));
+        assert!(command.contains("Add-WindowsCapability"));
         assert!(command.contains("Win32-OpenSSH/releases/latest"));
         assert!(command.contains("OpenSSH-Win64.zip"));
         assert!(command.contains("Expand-Archive"));
+        assert!(command.contains("SetEnvironmentVariable"));
     }
 
     #[test]

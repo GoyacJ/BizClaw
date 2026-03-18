@@ -389,6 +389,7 @@ mod tests {
             runtime_status: RuntimeStatus::default(),
             install_recommendation: String::new(),
             wsl_status: None,
+            windows_discovery: None,
         }
     }
 }

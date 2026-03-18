@@ -26,7 +26,8 @@ use crate::{
         macos_ensure_ssh_plan, read_latest_openclaw_version, read_openclaw_version,
         resolve_runtime_target, target_command_available, update_plans_for_target,
         windows_local_git_ready, windows_local_git_version, windows_local_node_ready,
-        windows_local_node_version, windows_local_ssh_ready, windows_native_ensure_git_plan,
+        windows_local_node_version, windows_local_openclaw_ready,
+        windows_local_openclaw_version, windows_local_ssh_ready, windows_native_ensure_git_plan,
         windows_native_ensure_node_plan, windows_native_ensure_ssh_plan, wsl_bootstrap_plan,
         wsl_ensure_ssh_plan, InstallPlan, Platform, MANUAL_INSTALL_URL, WINDOWS_NODE_MIN_MAJOR,
     },
@@ -56,7 +57,8 @@ use crate::{
         OperationRemediationKind, OperationResult, OperationStep, OperationTaskPhase,
         OperationTaskSnapshot, PersistedSettings, RuntimePhase, RuntimeStatus, RuntimeTarget,
         SearchClawHubSkillsRequest, SupportUrlTarget, TargetProfile, ThemePreference, TokenStatus,
-        UiPreferences, UpdateOpenClawAgentIdentityRequest, UserProfile, WslStatus,
+        UiPreferences, UpdateOpenClawAgentIdentityRequest, UserProfile, WindowsDiscovery,
+        WindowsDiscoveryPhase, WindowsNativeDiscovery, WindowsWslDiscovery, WslStatus,
     },
     validation::{
         saved_settings_are_complete, validate_company_profile_with_locale,
@@ -69,6 +71,7 @@ pub struct AppState {
     pub operation: SharedOperationState,
     pub port_task_active: Arc<AtomicBool>,
     pub environment_cache: Arc<Mutex<Option<EnvironmentSnapshot>>>,
+    environment_probe_active: Arc<AtomicBool>,
     latest_openclaw_version_cache: Arc<Mutex<Option<LatestOpenClawVersionCacheEntry>>>,
 }
 
@@ -79,6 +82,7 @@ impl Default for AppState {
             operation: new_shared_operation_state(),
             port_task_active: Arc::new(AtomicBool::new(false)),
             environment_cache: Arc::new(Mutex::new(None)),
+            environment_probe_active: Arc::new(AtomicBool::new(false)),
             latest_openclaw_version_cache: Arc::new(Mutex::new(None)),
         }
     }
@@ -120,6 +124,7 @@ struct ResolvedEnvironment {
     latest_openclaw_version: Option<String>,
     update_available: bool,
     wsl_status: Option<WslStatus>,
+    windows_discovery: Option<WindowsDiscovery>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,7 +209,14 @@ pub fn detect_environment(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<EnvironmentSnapshot, String> {
-    refresh_environment_snapshot(&app, &state, false).map_err(err_to_string)
+    match current_platform().map_err(err_to_string)? {
+        Platform::Windows => {
+            let snapshot = detect_environment_quick(&app, &state).map_err(err_to_string)?;
+            spawn_windows_environment_probe(&app, &state);
+            Ok(snapshot)
+        }
+        Platform::MacOs => refresh_environment_snapshot(&app, &state, false).map_err(err_to_string),
+    }
 }
 
 #[tauri::command]
@@ -587,18 +599,25 @@ fn detect_environment_inner(
         .as_ref()
         .map(|saved| saved.target_profile.clone())
         .unwrap_or_default();
-    let runtime_target = resolve_runtime_target(platform, &target_profile);
-    let resolved = resolve_environment(
-        runtime_target,
-        &target_profile,
-        include_remote_update_check,
-        latest_version_cache,
-    );
+    let resolved = match platform {
+        Platform::MacOs => resolve_environment(
+            RuntimeTarget::MacNative,
+            &target_profile,
+            include_remote_update_check,
+            latest_version_cache,
+        ),
+        Platform::Windows => resolved_environment_from_windows_discovery(
+            &target_profile,
+            include_remote_update_check,
+            latest_version_cache,
+            detect_windows_discovery(&target_profile),
+        ),
+    };
     let token_state = inspect_token_state(token_store(app).and_then(|store| store.get_secret()));
 
     Ok(build_environment_snapshot(
         env::consts::OS,
-        runtime_target,
+        resolved.runtime_target,
         settings,
         ui_preferences,
         snapshot_status(runtime),
@@ -627,6 +646,202 @@ fn refresh_environment_snapshot(
     }
     let _ = app_menu::refresh_status_menu_from_state(app);
     Ok(snapshot)
+}
+
+fn detect_environment_quick(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+) -> Result<EnvironmentSnapshot> {
+    let settings = settings_store(app).and_then(|store| store.load())?;
+    let ui_preferences = ui_preferences_store(app)
+        .and_then(|store| store.load())
+        .map(|value| value.unwrap_or_default())?;
+    let target_profile = settings
+        .as_ref()
+        .map(|saved| saved.target_profile.clone())
+        .unwrap_or_default();
+    let token_state = inspect_token_state(token_store(app).and_then(|store| store.get_secret()));
+    let resolved = quick_windows_resolved_environment(
+        &target_profile,
+        &state.latest_openclaw_version_cache,
+    );
+
+    Ok(build_environment_snapshot(
+        env::consts::OS,
+        resolved.runtime_target,
+        settings,
+        ui_preferences,
+        snapshot_status(&state.runtime),
+        resolved,
+        token_state,
+    ))
+}
+
+fn spawn_windows_environment_probe(app: &AppHandle, state: &State<'_, AppState>) {
+    if state
+        .environment_probe_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    let app_handle = app.clone();
+    let runtime_state = state.runtime.clone();
+    let environment_cache = state.environment_cache.clone();
+    let latest_version_cache = state.latest_openclaw_version_cache.clone();
+    let environment_probe_active = state.environment_probe_active.clone();
+
+    thread::spawn(move || {
+        let snapshot = detect_environment_inner(
+            &app_handle,
+            &runtime_state,
+            false,
+            &latest_version_cache,
+        );
+
+        if let Ok(snapshot) = snapshot {
+            {
+                let mut guard = environment_cache
+                    .lock()
+                    .expect("environment cache mutex poisoned");
+                *guard = Some(snapshot.clone());
+            }
+            emit_environment_snapshot(&app_handle, &snapshot);
+        }
+
+        let _ = app_menu::refresh_status_menu_from_state(&app_handle);
+        environment_probe_active.store(false, Ordering::Release);
+    });
+}
+
+fn quick_windows_resolved_environment(
+    target_profile: &TargetProfile,
+    latest_version_cache: &Arc<Mutex<Option<LatestOpenClawVersionCacheEntry>>>,
+) -> ResolvedEnvironment {
+    let host_ssh_installed = windows_local_ssh_ready();
+    let host_openclaw_version = windows_local_openclaw_version();
+    let host_openclaw_installed = host_openclaw_version.is_some();
+    let latest_openclaw_version = read_cached_latest_openclaw_version(
+        latest_version_cache,
+        RuntimeTarget::WindowsNative,
+        target_profile,
+    )
+    .flatten();
+    let windows_discovery = WindowsDiscovery {
+        phase: WindowsDiscoveryPhase::Pending,
+        native: WindowsNativeDiscovery {
+            ssh_installed: host_ssh_installed,
+            node_installed: windows_local_node_ready(),
+            node_version: windows_local_node_version(),
+            git_installed: windows_local_git_ready(),
+            git_version: windows_local_git_version(),
+            openclaw_installed: host_openclaw_installed,
+            openclaw_version: host_openclaw_version.clone(),
+        },
+        wsl: WindowsWslDiscovery::default(),
+    };
+
+    ResolvedEnvironment {
+        runtime_target: RuntimeTarget::WindowsNative,
+        host_ssh_installed,
+        host_openclaw_installed,
+        target_ssh_installed: host_ssh_installed,
+        wsl_openclaw_installed: false,
+        openclaw_installed: host_openclaw_installed,
+        openclaw_version: host_openclaw_version.clone(),
+        latest_openclaw_version: latest_openclaw_version.clone(),
+        update_available: update_available_from_versions(
+            host_openclaw_version.as_deref(),
+            latest_openclaw_version.as_deref(),
+        ),
+        wsl_status: None,
+        windows_discovery: Some(windows_discovery),
+    }
+}
+
+fn detect_windows_discovery(target_profile: &TargetProfile) -> WindowsDiscovery {
+    let native_openclaw_version = windows_local_openclaw_version();
+    let wsl_status = detect_wsl_status(target_profile);
+    let wsl_ssh_installed = wsl_status.ready
+        && target_command_available(RuntimeTarget::WindowsWsl, target_profile, "ssh");
+    let wsl_openclaw_version = if wsl_status.ready {
+        read_openclaw_version(RuntimeTarget::WindowsWsl, target_profile)
+    } else {
+        None
+    };
+
+    WindowsDiscovery {
+        phase: WindowsDiscoveryPhase::Ready,
+        native: WindowsNativeDiscovery {
+            ssh_installed: windows_local_ssh_ready(),
+            node_installed: windows_local_node_ready(),
+            node_version: windows_local_node_version(),
+            git_installed: windows_local_git_ready(),
+            git_version: windows_local_git_version(),
+            openclaw_installed: native_openclaw_version.is_some(),
+            openclaw_version: native_openclaw_version,
+        },
+        wsl: WindowsWslDiscovery {
+            status: Some(wsl_status.clone()),
+            ssh_installed: wsl_ssh_installed,
+            openclaw_installed: wsl_openclaw_version.is_some(),
+            openclaw_version: wsl_openclaw_version,
+        },
+    }
+}
+
+fn resolved_environment_from_windows_discovery(
+    target_profile: &TargetProfile,
+    include_remote_update_check: bool,
+    latest_version_cache: &Arc<Mutex<Option<LatestOpenClawVersionCacheEntry>>>,
+    windows_discovery: WindowsDiscovery,
+) -> ResolvedEnvironment {
+    let runtime_target = if windows_discovery.native.openclaw_installed {
+        RuntimeTarget::WindowsNative
+    } else if windows_discovery.wsl.openclaw_installed {
+        RuntimeTarget::WindowsWsl
+    } else {
+        RuntimeTarget::WindowsNative
+    };
+    let openclaw_version = match runtime_target {
+        RuntimeTarget::WindowsNative => windows_discovery.native.openclaw_version.clone(),
+        RuntimeTarget::WindowsWsl => windows_discovery.wsl.openclaw_version.clone(),
+        RuntimeTarget::MacNative => None,
+    };
+    let latest_openclaw_version = if include_remote_update_check {
+        read_latest_openclaw_version_cached(
+            latest_version_cache,
+            runtime_target,
+            target_profile,
+        )
+    } else {
+        read_cached_latest_openclaw_version(latest_version_cache, runtime_target, target_profile)
+            .flatten()
+    };
+
+    ResolvedEnvironment {
+        runtime_target,
+        host_ssh_installed: windows_discovery.native.ssh_installed,
+        host_openclaw_installed: windows_discovery.native.openclaw_installed,
+        target_ssh_installed: match runtime_target {
+            RuntimeTarget::WindowsNative => windows_discovery.native.ssh_installed,
+            RuntimeTarget::WindowsWsl => windows_discovery.wsl.ssh_installed,
+            RuntimeTarget::MacNative => false,
+        },
+        wsl_openclaw_installed: windows_discovery.wsl.openclaw_installed,
+        openclaw_installed: openclaw_version.is_some(),
+        openclaw_version: openclaw_version.clone(),
+        latest_openclaw_version: latest_openclaw_version.clone(),
+        update_available: update_available_from_versions(
+            openclaw_version.as_deref(),
+            latest_openclaw_version.as_deref(),
+        ),
+        wsl_status: matches!(runtime_target, RuntimeTarget::WindowsWsl)
+            .then(|| windows_discovery.wsl.status.clone())
+            .flatten(),
+        windows_discovery: Some(windows_discovery),
+    }
 }
 
 fn update_cached_runtime_status(state: &State<'_, AppState>, status: &RuntimeStatus) {
@@ -659,7 +874,10 @@ fn resolve_environment(
         RuntimeTarget::WindowsNative | RuntimeTarget::WindowsWsl => windows_local_ssh_ready(),
         RuntimeTarget::MacNative => command_available("ssh"),
     };
-    let host_openclaw_installed = command_available("openclaw");
+    let host_openclaw_installed = match runtime_target {
+        RuntimeTarget::WindowsNative | RuntimeTarget::WindowsWsl => windows_local_openclaw_ready(),
+        RuntimeTarget::MacNative => command_available("openclaw"),
+    };
     let windows_wsl_status = if matches!(runtime_target, RuntimeTarget::WindowsWsl)
         || (!host_openclaw_installed && matches!(runtime_target, RuntimeTarget::WindowsNative))
     {
@@ -722,6 +940,7 @@ fn resolve_environment(
         latest_openclaw_version,
         update_available,
         wsl_status,
+        windows_discovery: None,
     }
 }
 
@@ -925,8 +1144,10 @@ fn build_environment_snapshot(
             resolved.target_ssh_installed,
             resolved.wsl_openclaw_installed,
             resolved.wsl_status.as_ref(),
+            resolved.windows_discovery.as_ref(),
         ),
         wsl_status: resolved.wsl_status,
+        windows_discovery: resolved.windows_discovery,
     }
 }
 
@@ -943,6 +1164,7 @@ fn apply_ui_preferences_to_snapshot(
         snapshot.target_ssh_installed,
         snapshot.wsl_openclaw_installed,
         snapshot.wsl_status.as_ref(),
+        snapshot.windows_discovery.as_ref(),
     );
 }
 
@@ -1528,6 +1750,10 @@ fn emit_connection_test_event(
     );
 }
 
+fn emit_environment_snapshot(app: &AppHandle, snapshot: &EnvironmentSnapshot) {
+    let _ = app.emit("environment-snapshot", snapshot.clone());
+}
+
 struct CapturedOutput {
     success: bool,
     stdout: String,
@@ -1542,6 +1768,7 @@ fn install_recommendation(
     target_ssh_installed: bool,
     wsl_openclaw_installed: bool,
     wsl_status: Option<&WslStatus>,
+    windows_discovery: Option<&WindowsDiscovery>,
 ) -> String {
     match runtime_target {
         RuntimeTarget::MacNative => {
@@ -1561,24 +1788,41 @@ fn install_recommendation(
             }
         }
         RuntimeTarget::WindowsNative => {
-            if !target_ssh_installed {
-                if matches!(locale, LocalePreference::EnUs) {
-                    "BizClaw will use the local Windows runtime first, but it still needs local OpenSSH to be installed before the hosted connection can start.".into()
+            if windows_discovery
+                .map(|discovery| matches!(discovery.phase, WindowsDiscoveryPhase::Pending))
+                .unwrap_or(false)
+            {
+                return if matches!(locale, LocalePreference::EnUs) {
+                    "BizClaw is detecting local Windows and WSL OpenClaw environments in the background. Local Windows installation stays the default install target.".into()
                 } else {
-                    "已检测到 Windows 本机 OpenClaw，BizClaw 将优先使用本机运行，但在启动托管前仍需要本机 OpenSSH。".into()
+                    "BizClaw 正在后台检测 Windows 本机与 WSL 环境，默认仍优先安装到 Windows 本机。".into()
+                };
+            }
+
+            if host_openclaw_installed {
+                if matches!(locale, LocalePreference::EnUs) {
+                    "OpenClaw is already installed on local Windows. BizClaw will keep using the native Windows installation first.".into()
+                } else {
+                    "已检测到 Windows 本机 OpenClaw，BizClaw 会继续优先使用本机安装。".into()
+                }
+            } else if !target_ssh_installed {
+                if matches!(locale, LocalePreference::EnUs) {
+                    "BizClaw installs to local Windows first. It will prepare OpenSSH, Node.js, Git, and then run the OpenClaw installer.".into()
+                } else {
+                    "BizClaw 默认先安装到 Windows 本机，并按顺序补齐 OpenSSH、Node.js、Git 后再安装 OpenClaw。".into()
                 }
             } else if matches!(locale, LocalePreference::EnUs) {
-                "BizClaw will use the local Windows OpenClaw installation first, and local setup will use the official Windows installer.".into()
+                "BizClaw will use the local Windows installation first. If you need a separate target, WSL remains available as an explicit install option.".into()
             } else {
-                "BizClaw 将优先使用 Windows 本机的 OpenClaw，并在可用时直接更新本机安装。".into()
+                "BizClaw 将优先使用 Windows 本机安装；如果你需要单独的环境，也可以显式选择安装到 WSL。".into()
             }
         }
         RuntimeTarget::WindowsWsl => {
             if !host_openclaw_installed && !wsl_openclaw_installed {
                 return if matches!(locale, LocalePreference::EnUs) {
-                    "OpenClaw is not installed on Windows or WSL yet. On Windows, BizClaw now installs locally first, while WSL is kept only for existing installations.".into()
+                    "OpenClaw is not installed on Windows or WSL yet. BizClaw now installs to local Windows first, while WSL remains an explicit secondary install target.".into()
                 } else {
-                    "当前尚未在 Windows 本机或 WSL 中检测到 OpenClaw。可以选择直接安装到 Windows 本机，或让 BizClaw 先配置 WSL Ubuntu 再安装。".into()
+                    "当前尚未在 Windows 本机或 WSL 中检测到 OpenClaw。BizClaw 默认先安装到 Windows 本机，同时保留显式的 WSL 安装入口。".into()
                 };
             }
             if let Some(status) = wsl_status {
@@ -1680,6 +1924,7 @@ fn start_install_or_update_task(
                     .expect("environment cache mutex poisoned");
                 *guard = Some(snapshot.clone());
             }
+            emit_environment_snapshot(&app_handle, &snapshot);
             let _ = app_menu::refresh_status_menu_from_state(&app_handle);
         } else {
             let _ = app_menu::refresh_status_menu_from_state(&app_handle);
@@ -1735,6 +1980,7 @@ fn start_check_update_task(
                         .expect("environment cache mutex poisoned");
                     *guard = Some(snapshot.clone());
                 }
+                emit_environment_snapshot(&app_handle, &snapshot);
                 let message = if snapshot.update_available {
                     locale_owned(
                         locale,
@@ -1915,9 +2161,7 @@ fn run_install_or_update(
     }
 
     if matches!(kind, OperationKind::Install)
-        && matches!(runtime_target, RuntimeTarget::WindowsNative)
-        && resolved.openclaw_installed
-        && resolved.target_ssh_installed
+        && should_skip_install_for_target(&resolved, runtime_target)
     {
         return Ok(OperationResult {
             kind,
@@ -1930,8 +2174,20 @@ fn run_install_or_update(
             manual_url: MANUAL_INSTALL_URL.into(),
             follow_up: locale_text(
                 locale,
-                "已检测到 Windows 本机 OpenClaw，跳过安装。",
-                "A local Windows OpenClaw installation is already available. Skipping install.",
+                match runtime_target {
+                    RuntimeTarget::WindowsNative => "已检测到 Windows 本机 OpenClaw，跳过安装。",
+                    RuntimeTarget::WindowsWsl => "已检测到 WSL 中的 OpenClaw，跳过安装。",
+                    RuntimeTarget::MacNative => "已检测到 OpenClaw，跳过安装。",
+                },
+                match runtime_target {
+                    RuntimeTarget::WindowsNative => {
+                        "A local Windows OpenClaw installation is already available. Skipping install."
+                    }
+                    RuntimeTarget::WindowsWsl => {
+                        "An OpenClaw installation is already available in WSL. Skipping install."
+                    }
+                    RuntimeTarget::MacNative => "OpenClaw is already detected. Skipping installation.",
+                },
             )
             .into(),
             remediation: None,
@@ -2110,8 +2366,8 @@ fn run_install_or_update(
                     ),
                     RuntimeTarget::WindowsNative => locale_text(
                         locale,
-                        "OpenSSH 安装步骤已执行，但当前仍未检测到 ssh 命令。请确认项目内置 MSI 已安装成功，或检查 PATH 后重试。",
-                        "The OpenSSH install step completed, but the ssh command is still unavailable. Confirm the bundled MSI installed successfully, or check PATH and try again.",
+                        "OpenSSH 安装步骤已执行，但当前仍未检测到 ssh 命令。请检查系统 OpenSSH Client 是否安装成功，或重新打开终端后再试。",
+                        "The OpenSSH install step completed, but the ssh command is still unavailable. Check whether Windows OpenSSH Client finished installing, or reopen the terminal and try again.",
                     ),
                     RuntimeTarget::WindowsWsl => locale_text(
                         locale,
@@ -2141,8 +2397,8 @@ fn run_install_or_update(
                 manual_url: MANUAL_INSTALL_URL.into(),
                 follow_up: locale_text(
                     locale,
-                    "BizClaw 鏈壘鍒伴」鐩唴缃?Node.js 瀹夎鍖呫€傝纭 scripts 鐩綍涓寘鍚?node-v24.14.0-x64.msi锛岀劧鍚庨噸璇曘€?",
-                    "BizClaw could not find the bundled Node.js installer. Make sure scripts/node-v24.14.0-x64.msi is included, then try again.",
+                    "BizClaw 未能准备 Node.js 官方安装器，请检查网络连接后重试。",
+                    "BizClaw could not prepare the official Node.js installer. Check the network connection and try again.",
                 )
                 .into(),
                 remediation: None,
@@ -2182,7 +2438,7 @@ fn run_install_or_update(
                 manual_url: MANUAL_INSTALL_URL.into(),
                 follow_up: locale_text(
                     locale,
-                    "BizClaw 鏈兘鑷姩瀹夎 Node.js銆傝鏌ョ湅杈撳嚭鍚庨噸璇曪紝骞跺湪绯荤粺鎺堟潈寮圭獥涓厑璁稿畨瑁呫€?",
+                    "BizClaw 未能自动安装 Node.js，请检查输出后重试，并在系统授权弹窗中允许安装。",
                     "BizClaw could not install Node.js automatically. Check the output, then retry and allow the Windows elevation prompt to continue.",
                 )
                 .into(),
@@ -2205,17 +2461,17 @@ fn run_install_or_update(
                     locale,
                     match detected_version.as_ref() {
                         Some(version) => format!(
-                            "Node.js 瀹夎姝ラ宸叉墽琛岋紝浣嗗綋鍓嶇増鏈?{} 浠嶄綆浜庤姹?{}+銆傝妫€鏌ヨ緭鍑哄悗閲嶈瘯銆?",
+                            "Node.js 安装步骤已执行，但当前版本 {} 仍低于要求的 {}+。请检查输出后重试。",
                             version, WINDOWS_NODE_MIN_MAJOR
                         ),
-                        None => "Node.js 瀹夎姝ラ宸叉墽琛岋紝浣嗗綋鍓嶄粛鏈娴嬪埌 node 鍛戒护銆傝纭椤圭洰鍐呯疆 MSI 宸插畨瑁呮垚鍔燂紝鎴栨鏌?PATH 鍚庨噸璇曘€?".into(),
+                        None => "Node.js 安装步骤已执行，但当前仍未检测到 node 命令。请重新打开终端后重试。".into(),
                     },
                     match detected_version.as_ref() {
                         Some(version) => format!(
                             "The Node.js install step completed, but the detected version {} is still below the required {}+. Check the output and try again.",
                             version, WINDOWS_NODE_MIN_MAJOR
                         ),
-                        None => "The Node.js install step completed, but the node command is still unavailable. Confirm the bundled MSI installed successfully, or check PATH and try again.".into(),
+                        None => "The Node.js install step completed, but the node command is still unavailable. Reopen the terminal and try again.".into(),
                     },
                 ),
                 remediation,
@@ -2239,8 +2495,8 @@ fn run_install_or_update(
                 manual_url: MANUAL_INSTALL_URL.into(),
                 follow_up: locale_text(
                     locale,
-                    "BizClaw 未找到项目内置的 Git 安装包。请确认 scripts 目录中包含 Git-2.53.0.2-64-bit.exe，然后重试。",
-                    "BizClaw could not find the bundled Git installer. Make sure scripts/Git-2.53.0.2-64-bit.exe is included, then try again.",
+                    "BizClaw 未能准备 Git 官方安装器，请检查网络连接后重试。",
+                    "BizClaw could not prepare the official Git installer. Check the network connection and try again.",
                 )
                 .into(),
                 remediation: None,
@@ -2306,14 +2562,14 @@ fn run_install_or_update(
                             "Git 安装步骤已执行，但当前检测到的版本仍异常：{}。请检查输出后重试。",
                             version
                         ),
-                        None => "Git 安装步骤已执行，但当前仍未检测到 git 命令。请确认项目内置安装包已安装成功，或检查 PATH 后重试。".into(),
+                        None => "Git 安装步骤已执行，但当前仍未检测到 git 命令。请重新打开终端后重试。".into(),
                     },
                     match detected_version.as_ref() {
                         Some(version) => format!(
                             "The Git install step completed, but the detected version still looks wrong: {}. Check the output and try again.",
                             version
                         ),
-                        None => "The Git install step completed, but the git command is still unavailable. Confirm the bundled installer completed successfully, or check PATH and try again.".into(),
+                        None => "The Git install step completed, but the git command is still unavailable. Reopen the terminal and try again.".into(),
                     },
                 ),
                 remediation,
@@ -2422,7 +2678,7 @@ fn run_install_or_update(
         {
             return Ok(result);
         }
-    } else if resolved.openclaw_installed {
+    } else if should_skip_install_for_target(&resolved, runtime_target) {
         return Ok(OperationResult {
             kind,
             strategy: "skipped".into(),
@@ -2513,8 +2769,8 @@ fn run_install_or_update(
                 } else {
                     locale_text(
                         locale,
-                        "OpenClaw 安装完成，请继续保存连接并启动托管。",
-                        "OpenClaw installation completed. Save the connection settings and start the hosted runtime.",
+                        "OpenClaw 安装完成，请继续保存连接并启动托管；如果当前终端还未识别新命令，请重新打开终端。",
+                        "OpenClaw installation completed. Save the connection settings and start the hosted runtime. If an existing terminal still does not see the new commands, reopen it.",
                     )
                     .into()
                 },
@@ -2576,6 +2832,21 @@ fn should_treat_plan_as_success(
     }
 
     matches!(kind, OperationKind::Install) && openclaw_available
+}
+
+fn should_skip_install_for_target(
+    resolved: &ResolvedEnvironment,
+    runtime_target: RuntimeTarget,
+) -> bool {
+    if !resolved.openclaw_installed {
+        return false;
+    }
+
+    match runtime_target {
+        RuntimeTarget::MacNative | RuntimeTarget::WindowsNative | RuntimeTarget::WindowsWsl => {
+            true
+        }
+    }
 }
 
 fn cancelled_follow_up(locale: LocalePreference, kind: OperationKind) -> &'static str {
@@ -2962,7 +3233,8 @@ mod tests {
         apply_ui_preferences_to_snapshot, build_environment_snapshot, cancelled_follow_up,
         evaluate_gateway_probe, gateway_probe_failure_result,
         gateway_probe_failure_result_with_reason, inspect_token_state, load_saved_token,
-        persist_profile_atomic, should_treat_plan_as_success, update_available_from_versions,
+        persist_profile_atomic, should_skip_install_for_target, should_treat_plan_as_success,
+        update_available_from_versions,
         window_background_color_for_theme, window_theme_for_preference,
         with_cached_latest_openclaw_version, CapturedOutput, ResolvedEnvironment, RuntimePhase,
         RuntimeStatus, SettingsStoreAccess, TokenState,
@@ -2971,7 +3243,8 @@ mod tests {
         secret_store::{MemorySecretStore, SecretStore},
         types::{
             CompanyProfile, ConnectionTestStep, LocalePreference, OperationKind, PersistedSettings,
-            RuntimeTarget, TargetProfile, TokenStatus, UiPreferences, UserProfile, WslStatus,
+            RuntimeTarget, TargetProfile, TokenStatus, UiPreferences, UserProfile, WindowsDiscovery,
+            WindowsDiscoveryPhase, WindowsNativeDiscovery, WindowsWslDiscovery, WslStatus,
         },
     };
 
@@ -3032,6 +3305,7 @@ mod tests {
                 latest_openclaw_version: Some("2026.3.9".into()),
                 update_available: true,
                 wsl_status: None,
+                windows_discovery: None,
             },
             TokenState {
                 status: TokenStatus::Saved,
@@ -3078,6 +3352,31 @@ mod tests {
                     needs_reboot: false,
                     message: Some("missing".into()),
                 }),
+                windows_discovery: Some(WindowsDiscovery {
+                    phase: WindowsDiscoveryPhase::Ready,
+                    native: WindowsNativeDiscovery {
+                        ssh_installed: false,
+                        node_installed: false,
+                        node_version: None,
+                        git_installed: false,
+                        git_version: None,
+                        openclaw_installed: false,
+                        openclaw_version: None,
+                    },
+                    wsl: WindowsWslDiscovery {
+                        status: Some(WslStatus {
+                            available: true,
+                            distro_name: "Ubuntu".into(),
+                            distro_installed: false,
+                            ready: false,
+                            needs_reboot: false,
+                            message: Some("missing".into()),
+                        }),
+                        ssh_installed: false,
+                        openclaw_installed: false,
+                        openclaw_version: None,
+                    },
+                }),
             },
             TokenState {
                 status: TokenStatus::Missing,
@@ -3092,6 +3391,13 @@ mod tests {
                 .as_ref()
                 .map(|status| status.distro_name.as_str()),
             Some("Ubuntu")
+        );
+        assert_eq!(
+            snapshot
+                .windows_discovery
+                .as_ref()
+                .map(|discovery| discovery.phase),
+            Some(WindowsDiscoveryPhase::Ready)
         );
         assert_eq!(snapshot.runtime_status.phase, RuntimePhase::InstallNeeded);
     }
@@ -3115,6 +3421,24 @@ mod tests {
                 latest_openclaw_version: Some("2026.3.9".into()),
                 update_available: true,
                 wsl_status: None,
+                windows_discovery: Some(WindowsDiscovery {
+                    phase: WindowsDiscoveryPhase::Ready,
+                    native: WindowsNativeDiscovery {
+                        ssh_installed: true,
+                        node_installed: true,
+                        node_version: Some("v24.0.0".into()),
+                        git_installed: true,
+                        git_version: Some("git version 2.53.0.windows.1".into()),
+                        openclaw_installed: true,
+                        openclaw_version: Some("OpenClaw 2026.3.8".into()),
+                    },
+                    wsl: WindowsWslDiscovery {
+                        status: None,
+                        ssh_installed: false,
+                        openclaw_installed: false,
+                        openclaw_version: None,
+                    },
+                }),
             },
             TokenState {
                 status: TokenStatus::Saved,
@@ -3124,7 +3448,54 @@ mod tests {
 
         assert_eq!(snapshot.runtime_target, RuntimeTarget::WindowsNative);
         assert_eq!(snapshot.wsl_status, None);
+        assert_eq!(
+            snapshot
+                .windows_discovery
+                .as_ref()
+                .and_then(|discovery| discovery.native.node_version.as_deref()),
+            Some("v24.0.0")
+        );
         assert_eq!(snapshot.runtime_status.phase, RuntimePhase::Configured);
+    }
+
+    #[test]
+    fn install_skip_checks_only_the_selected_target_openclaw_presence() {
+        let native_resolved = ResolvedEnvironment {
+            runtime_target: RuntimeTarget::WindowsNative,
+            host_ssh_installed: false,
+            host_openclaw_installed: true,
+            target_ssh_installed: false,
+            wsl_openclaw_installed: false,
+            openclaw_installed: true,
+            openclaw_version: Some("OpenClaw 2026.3.8".into()),
+            latest_openclaw_version: None,
+            update_available: false,
+            wsl_status: None,
+            windows_discovery: None,
+        };
+        let wsl_resolved = ResolvedEnvironment {
+            runtime_target: RuntimeTarget::WindowsWsl,
+            host_ssh_installed: true,
+            host_openclaw_installed: false,
+            target_ssh_installed: false,
+            wsl_openclaw_installed: true,
+            openclaw_installed: true,
+            openclaw_version: Some("OpenClaw 2026.3.8".into()),
+            latest_openclaw_version: None,
+            update_available: false,
+            wsl_status: Some(WslStatus {
+                available: true,
+                distro_name: "Ubuntu".into(),
+                distro_installed: true,
+                ready: true,
+                needs_reboot: false,
+                message: None,
+            }),
+            windows_discovery: None,
+        };
+
+        assert!(should_skip_install_for_target(&native_resolved, RuntimeTarget::WindowsNative));
+        assert!(should_skip_install_for_target(&wsl_resolved, RuntimeTarget::WindowsWsl));
     }
 
     #[test]
@@ -3342,6 +3713,31 @@ mod tests {
                     needs_reboot: false,
                     message: None,
                 }),
+                windows_discovery: Some(WindowsDiscovery {
+                    phase: WindowsDiscoveryPhase::Ready,
+                    native: WindowsNativeDiscovery {
+                        ssh_installed: true,
+                        node_installed: true,
+                        node_version: Some("v24.0.0".into()),
+                        git_installed: true,
+                        git_version: Some("git version 2.53.0.windows.1".into()),
+                        openclaw_installed: false,
+                        openclaw_version: None,
+                    },
+                    wsl: WindowsWslDiscovery {
+                        status: Some(WslStatus {
+                            available: true,
+                            distro_name: "Ubuntu".into(),
+                            distro_installed: true,
+                            ready: true,
+                            needs_reboot: false,
+                            message: None,
+                        }),
+                        ssh_installed: false,
+                        openclaw_installed: false,
+                        openclaw_version: None,
+                    },
+                }),
             },
             TokenState {
                 status: TokenStatus::Missing,
@@ -3361,7 +3757,7 @@ mod tests {
         assert_eq!(snapshot.ui_preferences.locale, LocalePreference::EnUs);
         assert_eq!(
             snapshot.install_recommendation,
-            "OpenClaw is not installed on Windows or WSL yet. On Windows, BizClaw now installs locally first, while WSL is kept only for existing installations."
+            "OpenClaw is not installed on Windows or WSL yet. BizClaw now installs to local Windows first, while WSL remains an explicit secondary install target."
         );
     }
 

@@ -276,6 +276,11 @@ export const onRuntimeLog = (handler: (entry: LogEntry) => void) =>
 export const onRuntimeStatus = (handler: (status: RuntimeStatus) => void): Promise<UnlistenFn> =>
   tauriListen<RuntimeStatus>('runtime-status', handler)
 
+export const onEnvironmentSnapshot = (
+  handler: (snapshot: EnvironmentSnapshot) => void,
+): Promise<UnlistenFn> =>
+  tauriListen<EnvironmentSnapshot>('environment-snapshot', handler)
+
 export const onOperationEvent = (
   handler: (entry: OperationEvent) => void,
 ): Promise<UnlistenFn> =>

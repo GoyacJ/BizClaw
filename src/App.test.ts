@@ -295,6 +295,7 @@ vi.mock('@/lib/use-app-model', () => {
       canStopOperation: ref(true),
       environment,
       installCli: vi.fn(),
+      installWslCli: vi.fn(),
       installBusyAction: ref<string | null>(null),
       installRemediationModal: reactive({
         open: false,
@@ -469,7 +470,7 @@ describe('App operations center', () => {
       node.textContent?.trim(),
     )
 
-    expect(navButtons).toEqual(['概览', '代理', '安装与更新', '连接与配置', '运行日志', '技能', '设置'])
+    expect(navButtons).toEqual(['概览', '安装与更新', '代理', '连接与配置', '运行日志', '技能', '设置'])
     expect(host.textContent).toContain('BIZCLAW')
     expect(host.textContent).not.toContain('操作中心')
     expect(host.textContent).not.toContain('macOS 本机')

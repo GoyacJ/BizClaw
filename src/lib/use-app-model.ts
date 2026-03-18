@@ -24,6 +24,7 @@ import {
   listOpenClawAgents,
   listOpenClawSkills,
   onConnectionTestEvent,
+  onEnvironmentSnapshot,
   onOperationEvent,
   onOperationStatus,
   onRefreshRequested,
@@ -747,12 +748,16 @@ export function useAppModel() {
   }
 
   async function refreshOperationalState(options: { includeLogs?: boolean } = {}) {
-    await refreshEnvironment()
-    if (options.includeLogs) {
-      await refreshLogs()
-    }
-    operationTask.value = await getOperationStatus()
-    operationEvents.value = await getOperationEvents()
+    const environmentTask = refreshEnvironment()
+    const logsTask = options.includeLogs ? refreshLogs() : Promise.resolve()
+    const [task, events] = await Promise.all([
+      getOperationStatus(),
+      getOperationEvents(),
+      environmentTask,
+      logsTask,
+    ])
+    operationTask.value = task
+    operationEvents.value = events
   }
 
   function setAgentBindingsCache(agentId: string, bindings: OpenClawAgentBinding[]) {
@@ -1403,6 +1408,16 @@ export function useAppModel() {
     await runOpenClawOperation('install', {
       preferOfficial: true,
       allowElevation: false,
+      ...(environment.value?.os === 'windows' ? { windowsTarget: 'windowsNative' as const } : {}),
+    })
+  }
+
+  async function installWslCli() {
+    activeSection.value = 'install'
+    await runOpenClawOperation('install', {
+      preferOfficial: true,
+      allowElevation: false,
+      windowsTarget: 'windowsWsl',
     })
   }
 
@@ -1691,6 +1706,9 @@ export function useAppModel() {
           runtimeStatus: status,
         }
       }),
+      onEnvironmentSnapshot((snapshot) => {
+        environment.value = snapshot
+      }),
       onOperationStatus((snapshot) => {
         applyOperationTaskSnapshot(snapshot)
       }),
@@ -1845,6 +1863,7 @@ export function useAppModel() {
     environment,
     installBusyAction,
     installCli,
+    installWslCli,
     installBizClawUpdate,
     launchManualInstall,
     logs,

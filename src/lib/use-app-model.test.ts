@@ -23,6 +23,7 @@ const apiMocks = vi.hoisted(() => ({
   listOpenClawAgents: vi.fn(),
   listOpenClawSkills: vi.fn(),
   openManualInstall: vi.fn(),
+  onEnvironmentSnapshot: vi.fn(),
   onRuntimeLog: vi.fn(),
   onRuntimeStatus: vi.fn(),
   onOperationStatus: vi.fn(),
@@ -69,6 +70,7 @@ vi.mock('@/lib/api', () => ({
   listOpenClawAgents: apiMocks.listOpenClawAgents,
   listOpenClawSkills: apiMocks.listOpenClawSkills,
   onConnectionTestEvent: apiMocks.onConnectionTestEvent,
+  onEnvironmentSnapshot: apiMocks.onEnvironmentSnapshot,
   onOperationEvent: apiMocks.onOperationEvent,
   onOperationStatus: apiMocks.onOperationStatus,
   onRefreshRequested: apiMocks.onRefreshRequested,
@@ -151,6 +153,7 @@ describe('useAppModel', () => {
     bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
     apiMocks.onRuntimeLog.mockResolvedValue(() => {})
     apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onEnvironmentSnapshot.mockResolvedValue(() => {})
     apiMocks.onOperationStatus.mockResolvedValue(() => {})
     apiMocks.onOperationEvent.mockResolvedValue(() => {})
     apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
@@ -192,6 +195,7 @@ describe('useAppModel', () => {
     bizclawUpdaterMocks.checkForBizClawUpdate.mockResolvedValue(null)
     apiMocks.onRuntimeLog.mockResolvedValue(() => {})
     apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onEnvironmentSnapshot.mockResolvedValue(() => {})
     apiMocks.onOperationStatus.mockResolvedValue(() => {})
     apiMocks.onOperationEvent.mockResolvedValue(() => {})
     apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
@@ -274,6 +278,7 @@ describe('useAppModel', () => {
     bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
     apiMocks.onRuntimeLog.mockResolvedValue(() => {})
     apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onEnvironmentSnapshot.mockResolvedValue(() => {})
     apiMocks.onOperationStatus.mockResolvedValue(() => {})
     apiMocks.onOperationEvent.mockResolvedValue(() => {})
     apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
@@ -1334,7 +1339,7 @@ describe('useAppModel', () => {
     expect(model.operationTask.value.phase).toBe('success')
   })
 
-  it('uses the native Windows install path directly when neither local nor WSL OpenClaw is installed', async () => {
+  it('installs to native Windows by default when the user clicks install on Windows', async () => {
     apiMocks.detectEnvironment.mockResolvedValue(createSnapshot({
       os: 'windows',
       runtimeTarget: 'windowsNative',
@@ -1359,6 +1364,7 @@ describe('useAppModel', () => {
     bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
     apiMocks.onRuntimeLog.mockResolvedValue(() => {})
     apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onEnvironmentSnapshot.mockResolvedValue(() => {})
     apiMocks.onOperationStatus.mockResolvedValue(() => {})
     apiMocks.onOperationEvent.mockResolvedValue(() => {})
     apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
@@ -1384,16 +1390,18 @@ describe('useAppModel', () => {
     expect(apiMocks.installOpenClaw).toHaveBeenCalledWith({
       preferOfficial: true,
       allowElevation: false,
+      windowsTarget: 'windowsNative',
     })
   })
 
-  it('keeps using the detected WSL installation when WSL already has OpenClaw installed', async () => {
+  it('can install explicitly to WSL on Windows when the user chooses the WSL action', async () => {
     apiMocks.detectEnvironment.mockResolvedValue(createSnapshot({
       os: 'windows',
-      runtimeTarget: 'windowsWsl',
-      openclawInstalled: true,
+      runtimeTarget: 'windowsNative',
+      openclawInstalled: false,
+      openclawVersion: null,
       hostOpenclawInstalled: false,
-      wslOpenclawInstalled: true,
+      wslOpenclawInstalled: false,
       wslStatus: {
         available: true,
         distroName: 'Ubuntu',
@@ -1410,6 +1418,7 @@ describe('useAppModel', () => {
     bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.21')
     apiMocks.onRuntimeLog.mockResolvedValue(() => {})
     apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onEnvironmentSnapshot.mockResolvedValue(() => {})
     apiMocks.onOperationStatus.mockResolvedValue(() => {})
     apiMocks.onOperationEvent.mockResolvedValue(() => {})
     apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
@@ -1429,13 +1438,84 @@ describe('useAppModel', () => {
     app.mount(host)
 
     await flushPromises()
-    await model.installCli()
+    await model.installWslCli()
     await flushPromises()
 
     expect(apiMocks.installOpenClaw).toHaveBeenCalledWith({
       preferOfficial: true,
       allowElevation: false,
+      windowsTarget: 'windowsWsl',
     })
+  })
+
+  it('applies pushed environment snapshots without requiring a full refresh', async () => {
+    let environmentSnapshotHandler: ((snapshot: EnvironmentSnapshot) => void) | null = null
+    const initialSnapshot = createSnapshot({
+      os: 'windows',
+      runtimeTarget: 'windowsNative',
+      openclawInstalled: false,
+      openclawVersion: null,
+      latestOpenclawVersion: null,
+      updateAvailable: false,
+    })
+    const refreshedSnapshot = createSnapshot({
+      os: 'windows',
+      runtimeTarget: 'windowsWsl',
+      openclawInstalled: true,
+      openclawVersion: 'OpenClaw 2026.3.9',
+      wslOpenclawInstalled: true,
+      wslStatus: {
+        available: true,
+        distroName: 'Ubuntu',
+        distroInstalled: true,
+        ready: true,
+        needsReboot: false,
+        message: null,
+      },
+    })
+
+    apiMocks.detectEnvironment.mockResolvedValue(initialSnapshot)
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onEnvironmentSnapshot.mockImplementation(async (handler: (snapshot: EnvironmentSnapshot) => void) => {
+      environmentSnapshotHandler = handler
+      return () => {}
+    })
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+	    await flushPromises()
+
+	    expect(model.environment.value?.runtimeTarget).toBe('windowsNative')
+	    expect(environmentSnapshotHandler).not.toBeNull()
+	    if (!environmentSnapshotHandler) {
+	      throw new Error('expected environment snapshot handler to be registered')
+	    }
+	    const applyEnvironmentSnapshot = environmentSnapshotHandler as (snapshot: EnvironmentSnapshot) => void
+
+	    applyEnvironmentSnapshot(refreshedSnapshot)
+	    await flushPromises()
+
+    expect(model.environment.value).toEqual(refreshedSnapshot)
   })
 
   it('batches runtime logs and operation events before updating the UI state', async () => {

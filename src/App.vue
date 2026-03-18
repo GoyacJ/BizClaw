@@ -44,6 +44,7 @@ const {
   environment,
   installBusyAction,
   installCli,
+  installWslCli,
   installBizClawUpdate,
   installRemediationModal,
   launchManualInstall,
@@ -88,8 +89,8 @@ const {
 
 const sections = computed(() => ([
   { key: 'overview', label: translate('nav.overview') },
-  { key: 'agent', label: translate('nav.agent') },
   { key: 'install', label: translate('nav.install') },
+  { key: 'agent', label: translate('nav.agent') },
   { key: 'connection', label: translate('nav.connection') },
   { key: 'runtime', label: translate('nav.runtime') },
   { key: 'skill', label: translate('nav.skill') },
@@ -154,6 +155,7 @@ const installSectionState = {
   operationError,
   operationEvents,
   installCli,
+  installWslCli,
   checkForUpdates,
   updateCli,
   stopOperation,

@@ -148,6 +148,49 @@ pub struct EnvironmentSnapshot {
     pub runtime_status: RuntimeStatus,
     pub install_recommendation: String,
     pub wsl_status: Option<WslStatus>,
+    #[serde(default)]
+    pub windows_discovery: Option<WindowsDiscovery>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum WindowsDiscoveryPhase {
+    #[default]
+    Pending,
+    Ready,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowsNativeDiscovery {
+    pub ssh_installed: bool,
+    pub node_installed: bool,
+    pub node_version: Option<String>,
+    pub git_installed: bool,
+    pub git_version: Option<String>,
+    pub openclaw_installed: bool,
+    pub openclaw_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowsWslDiscovery {
+    #[serde(default)]
+    pub status: Option<WslStatus>,
+    pub ssh_installed: bool,
+    pub openclaw_installed: bool,
+    pub openclaw_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowsDiscovery {
+    #[serde(default)]
+    pub phase: WindowsDiscoveryPhase,
+    #[serde(default)]
+    pub native: WindowsNativeDiscovery,
+    #[serde(default)]
+    pub wsl: WindowsWslDiscovery,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

@@ -79,6 +79,32 @@ export interface EnvironmentSnapshot {
   runtimeStatus: RuntimeStatus
   installRecommendation: string
   wslStatus: WslStatus | null
+  windowsDiscovery?: WindowsDiscovery | null
+}
+
+export type WindowsDiscoveryPhase = 'pending' | 'ready'
+
+export interface WindowsNativeDiscovery {
+  sshInstalled: boolean
+  nodeInstalled: boolean
+  nodeVersion: string | null
+  gitInstalled: boolean
+  gitVersion: string | null
+  openclawInstalled: boolean
+  openclawVersion: string | null
+}
+
+export interface WindowsWslDiscovery {
+  status: WslStatus | null
+  sshInstalled: boolean
+  openclawInstalled: boolean
+  openclawVersion: string | null
+}
+
+export interface WindowsDiscovery {
+  phase: WindowsDiscoveryPhase
+  native: WindowsNativeDiscovery
+  wsl: WindowsWslDiscovery
 }
 
 export type BizClawUpdatePhase =

@@ -230,3 +230,131 @@ export interface InstallRemediationModalState {
   supportLabel: string
   supportUrlTarget: SupportUrlTarget | null
 }
+
+export type OpenClawIdentitySource = 'identity' | 'config'
+export type OpenClawSkillLocationKind = 'workspaceLocal' | 'sharedLocal' | 'bundled' | 'external'
+
+export interface OpenClawAgentSummary {
+  id: string
+  name?: string | null
+  identityName?: string | null
+  identityEmoji?: string | null
+  identitySource?: OpenClawIdentitySource | null
+  workspace: string
+  agentDir: string
+  model?: string | null
+  bindings: number
+  isDefault: boolean
+  routes?: string[]
+  bindingDetails?: string[]
+  providers?: string[]
+}
+
+export interface OpenClawAgentBinding {
+  agentId: string
+  channel: string
+  accountId: string | null
+  description: string
+}
+
+export interface CreateOpenClawAgentRequest {
+  name: string
+  workspace: string
+  model?: string | null
+  bindings: string[]
+}
+
+export interface UpdateOpenClawAgentIdentityRequest {
+  agentId: string
+  name?: string | null
+  emoji?: string | null
+  theme?: string | null
+  avatar?: string | null
+}
+
+export interface OpenClawSkillRequirements {
+  bins: string[]
+  anyBins: string[]
+  env: string[]
+  config: string[]
+  os: string[]
+}
+
+export interface OpenClawSkillInstallHint {
+  id: string
+  kind: string
+  label: string
+  bins: string[]
+}
+
+export interface OpenClawSkillSummary {
+  name: string
+  description: string
+  emoji?: string | null
+  eligible: boolean
+  disabled: boolean
+  blockedByAllowlist: boolean
+  source: string
+  bundled: boolean
+  primaryEnv?: string | null
+  homepage?: string | null
+  missing: OpenClawSkillRequirements
+  locationKind: OpenClawSkillLocationKind
+  canDelete: boolean
+}
+
+export interface OpenClawSkillInventory {
+  workspaceDir: string | null
+  managedSkillsDir: string | null
+  skills: OpenClawSkillSummary[]
+}
+
+export interface OpenClawSkillCheckSummary {
+  total: number
+  eligible: number
+  disabled: number
+  blocked: number
+  missingRequirements: number
+}
+
+export interface OpenClawSkillCheckItem {
+  name: string
+  missing: OpenClawSkillRequirements
+  install: OpenClawSkillInstallHint[]
+}
+
+export interface OpenClawSkillCheckReport {
+  summary: OpenClawSkillCheckSummary
+  eligible: string[]
+  disabled: string[]
+  blocked: string[]
+  missingRequirements: OpenClawSkillCheckItem[]
+}
+
+export interface OpenClawSkillInfo {
+  name: string
+  description: string
+  source: string
+  bundled: boolean
+  filePath: string
+  baseDir: string
+  skillKey: string
+  emoji?: string | null
+  homepage?: string | null
+  primaryEnv?: string | null
+  always: boolean
+  disabled: boolean
+  blockedByAllowlist: boolean
+  eligible: boolean
+  requirements: OpenClawSkillRequirements
+  missing: OpenClawSkillRequirements
+  configChecks: string[]
+  install: OpenClawSkillInstallHint[]
+  locationKind: OpenClawSkillLocationKind
+  canDelete: boolean
+}
+
+export interface CreateLocalSkillRequest {
+  name: string
+  location: Extract<OpenClawSkillLocationKind, 'workspaceLocal' | 'sharedLocal'>
+}

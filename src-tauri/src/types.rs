@@ -333,6 +333,214 @@ pub struct ConnectionTestResult {
     pub stderr: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum OpenClawIdentitySource {
+    Identity,
+    Config,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum OpenClawSkillLocationKind {
+    WorkspaceLocal,
+    SharedLocal,
+    Bundled,
+    External,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawAgentSummary {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub identity_name: Option<String>,
+    #[serde(default)]
+    pub identity_emoji: Option<String>,
+    #[serde(default)]
+    pub identity_source: Option<OpenClawIdentitySource>,
+    pub workspace: String,
+    pub agent_dir: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    pub bindings: usize,
+    pub is_default: bool,
+    #[serde(default)]
+    pub routes: Option<Vec<String>>,
+    #[serde(default)]
+    pub binding_details: Option<Vec<String>>,
+    #[serde(default)]
+    pub providers: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawAgentBinding {
+    pub agent_id: String,
+    pub channel: String,
+    pub account_id: Option<String>,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateOpenClawAgentRequest {
+    pub name: String,
+    pub workspace: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub bindings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateOpenClawAgentIdentityRequest {
+    pub agent_id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub emoji: Option<String>,
+    #[serde(default)]
+    pub theme: Option<String>,
+    #[serde(default)]
+    pub avatar: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawSkillRequirements {
+    #[serde(default)]
+    pub bins: Vec<String>,
+    #[serde(default)]
+    pub any_bins: Vec<String>,
+    #[serde(default)]
+    pub env: Vec<String>,
+    #[serde(default)]
+    pub config: Vec<String>,
+    #[serde(default)]
+    pub os: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawSkillInstallHint {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    #[serde(default)]
+    pub bins: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawSkillSummary {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub emoji: Option<String>,
+    pub eligible: bool,
+    pub disabled: bool,
+    pub blocked_by_allowlist: bool,
+    pub source: String,
+    pub bundled: bool,
+    #[serde(default)]
+    pub primary_env: Option<String>,
+    #[serde(default)]
+    pub homepage: Option<String>,
+    #[serde(default)]
+    pub missing: OpenClawSkillRequirements,
+    pub location_kind: OpenClawSkillLocationKind,
+    pub can_delete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawSkillInventory {
+    #[serde(default)]
+    pub workspace_dir: Option<String>,
+    #[serde(default)]
+    pub managed_skills_dir: Option<String>,
+    #[serde(default)]
+    pub skills: Vec<OpenClawSkillSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawSkillCheckSummary {
+    pub total: usize,
+    pub eligible: usize,
+    pub disabled: usize,
+    pub blocked: usize,
+    pub missing_requirements: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawSkillCheckItem {
+    pub name: String,
+    #[serde(default)]
+    pub missing: OpenClawSkillRequirements,
+    #[serde(default)]
+    pub install: Vec<OpenClawSkillInstallHint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawSkillCheckReport {
+    #[serde(default)]
+    pub summary: OpenClawSkillCheckSummary,
+    #[serde(default)]
+    pub eligible: Vec<String>,
+    #[serde(default)]
+    pub disabled: Vec<String>,
+    #[serde(default)]
+    pub blocked: Vec<String>,
+    #[serde(default)]
+    pub missing_requirements: Vec<OpenClawSkillCheckItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawSkillInfo {
+    pub name: String,
+    pub description: String,
+    pub source: String,
+    pub bundled: bool,
+    pub file_path: String,
+    pub base_dir: String,
+    pub skill_key: String,
+    #[serde(default)]
+    pub emoji: Option<String>,
+    #[serde(default)]
+    pub homepage: Option<String>,
+    #[serde(default)]
+    pub primary_env: Option<String>,
+    pub always: bool,
+    pub disabled: bool,
+    pub blocked_by_allowlist: bool,
+    pub eligible: bool,
+    #[serde(default)]
+    pub requirements: OpenClawSkillRequirements,
+    #[serde(default)]
+    pub missing: OpenClawSkillRequirements,
+    #[serde(default)]
+    pub config_checks: Vec<String>,
+    #[serde(default)]
+    pub install: Vec<OpenClawSkillInstallHint>,
+    pub location_kind: OpenClawSkillLocationKind,
+    pub can_delete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateLocalSkillRequest {
+    pub name: String,
+    pub location: OpenClawSkillLocationKind,
+}
+
 fn default_wsl_distro() -> String {
     "Ubuntu".into()
 }

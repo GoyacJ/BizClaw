@@ -64,6 +64,8 @@ describe('tauri api fallback', () => {
       startedAt: null,
       endedAt: null,
     })
+    await expect(api.listOpenClawAgents()).rejects.toThrow('BizClaw desktop APIs are unavailable in the browser preview.')
+    await expect(api.listOpenClawSkills()).rejects.toThrow('BizClaw desktop APIs are unavailable in the browser preview.')
     await expect(api.getOperationEvents()).resolves.toEqual([])
     await expect(api.streamLogs()).resolves.toEqual([])
     await expect(api.saveUiPreferences(preferences)).resolves.toEqual(preferences)
@@ -120,5 +122,46 @@ describe('tauri api fallback', () => {
         sidebarCollapsed: false,
       },
     })
+  })
+
+  it('forwards agent and skill commands to tauri invoke when available', async () => {
+    const invoke = vi.fn(async (_command: string, args?: Record<string, unknown>) => args ?? null)
+    vi.doMock('@tauri-apps/api/core', () => ({
+      invoke,
+    }))
+    vi.doMock('@tauri-apps/api/event', () => ({
+      listen: vi.fn(),
+    }))
+    ;(globalThis as { __TAURI_INTERNALS__?: { invoke?: unknown } }).__TAURI_INTERNALS__ = {
+      invoke,
+    }
+
+    const api = await import('./api')
+
+    await api.listOpenClawAgents()
+    await api.listOpenClawAgentBindings('main')
+    await api.createOpenClawAgent({
+      name: 'Ops',
+      workspace: '/tmp/openclaw-ops',
+      model: 'minimax-cn/MiniMax-M2.5',
+      bindings: ['telegram'],
+    })
+    await api.listOpenClawSkills()
+    await api.checkOpenClawSkills()
+    await api.getOpenClawSkillInfo('coding-agent')
+
+    expect(invoke).toHaveBeenCalledWith('list_openclaw_agents', undefined)
+    expect(invoke).toHaveBeenCalledWith('list_openclaw_agent_bindings', { agentId: 'main' })
+    expect(invoke).toHaveBeenCalledWith('create_openclaw_agent', {
+      request: {
+        name: 'Ops',
+        workspace: '/tmp/openclaw-ops',
+        model: 'minimax-cn/MiniMax-M2.5',
+        bindings: ['telegram'],
+      },
+    })
+    expect(invoke).toHaveBeenCalledWith('list_openclaw_skills', undefined)
+    expect(invoke).toHaveBeenCalledWith('check_openclaw_skills', undefined)
+    expect(invoke).toHaveBeenCalledWith('get_openclaw_skill_info', { name: 'coding-agent' })
   })
 })

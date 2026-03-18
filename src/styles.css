@@ -754,7 +754,25 @@ h3 {
   transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
 }
 
+.field textarea,
+.field-select {
+  min-height: 42px;
+  padding: 10px 13px;
+  border: 1px solid transparent;
+  border-color: var(--input-border);
+  border-radius: 14px;
+  background: var(--field-bg);
+  color: inherit;
+  box-shadow: var(--input-shadow);
+  transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
+}
+
 .field input:hover {
+  border-color: var(--button-secondary-active-border);
+}
+
+.field textarea:hover,
+.field-select:hover {
   border-color: var(--button-secondary-active-border);
 }
 
@@ -762,6 +780,97 @@ h3 {
   outline: none;
   border-color: var(--input-focus-border);
   box-shadow: var(--input-focus-shadow);
+}
+
+.field textarea:focus,
+.field-select:focus {
+  outline: none;
+  border-color: var(--input-focus-border);
+  box-shadow: var(--input-focus-shadow);
+}
+
+.field textarea {
+  resize: vertical;
+}
+
+.management-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.1fr);
+  gap: 16px;
+}
+
+.management-panel,
+.management-group {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--row-bg);
+}
+
+.management-list {
+  display: grid;
+  gap: 10px;
+}
+
+.management-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface-strong);
+  color: inherit;
+  text-align: left;
+  box-shadow: var(--button-secondary-shadow);
+}
+
+.management-row[data-active="true"] {
+  border-color: var(--button-secondary-active-border);
+  background: var(--button-secondary-active-bg);
+}
+
+.management-row--static {
+  cursor: default;
+}
+
+.management-row--static:hover {
+  transform: none;
+}
+
+.management-row-main,
+.management-row-meta {
+  display: grid;
+  gap: 6px;
+}
+
+.management-row-main span,
+.detail-list {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.management-row-meta {
+  justify-items: end;
+}
+
+.empty-state {
+  padding: 16px;
+  border: 1px dashed var(--line);
+  border-radius: 16px;
+  color: var(--muted);
+  background: var(--row-bg);
+}
+
+.detail-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
 }
 
 .toggle-row {
@@ -1018,6 +1127,7 @@ h3 {
   }
 
   .page-grid,
+  .management-layout,
   .support-grid,
   .form-grid,
   .advanced-grid {

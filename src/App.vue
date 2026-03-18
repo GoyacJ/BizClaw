@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 
+import AppAgentsSection from './components/AppAgentsSection.vue'
 import AppConnectionSection from './components/AppConnectionSection.vue'
 import AppInstallSection from './components/AppInstallSection.vue'
 import AppOverviewSection from './components/AppOverviewSection.vue'
 import AppRuntimeLogsSection from './components/AppRuntimeLogsSection.vue'
 import AppSidebar from './components/AppSidebar.vue'
+import AppSkillsSection from './components/AppSkillsSection.vue'
 import AppStatusBar from './components/AppStatusBar.vue'
 import AppSettingsSection from './components/AppSettingsSection.vue'
 import AppWorkspaceHeader from './components/AppWorkspaceHeader.vue'
@@ -16,6 +18,7 @@ import type { ConnectionTestModalStep } from '@/types'
 const {
   activeSection,
   advancedOpen,
+  agentsState,
   bizclawUpdate,
   bizclawUpdateActionLabel,
   bizclawUpdateBlockedReason,
@@ -68,6 +71,7 @@ const {
   saveOnly,
   setSidebarCollapsed: persistSidebarCollapsed,
   sshPasswordInput,
+  skillsState,
   sshStateLabel,
   startHostedRuntime,
   statusItems,
@@ -87,9 +91,11 @@ const {
 
 const sections = computed(() => ([
   { key: 'overview', label: translate('nav.overview') },
+  { key: 'agent', label: translate('nav.agent') },
   { key: 'install', label: translate('nav.install') },
   { key: 'connection', label: translate('nav.connection') },
   { key: 'runtime', label: translate('nav.runtime') },
+  { key: 'skill', label: translate('nav.skill') },
   { key: 'settings', label: translate('nav.settings') },
 ] as const))
 
@@ -182,6 +188,10 @@ const connectionSectionState = {
   startHostedRuntime,
   stopHostedRuntime,
 }
+
+const agentSectionState = agentsState
+
+const skillSectionState = skillsState
 
 const settingsSectionState = {
   uiPreferences,
@@ -298,6 +308,11 @@ function connectionStepLabel(status: ConnectionTestModalStep['status']) {
           :go-connection="goConnection"
         />
 
+        <AppAgentsSection
+          v-else-if="activeSection === 'agent'"
+          :state="agentSectionState"
+        />
+
         <AppInstallSection
           v-else-if="activeSection === 'install'"
           :state="installSectionState"
@@ -306,6 +321,16 @@ function connectionStepLabel(status: ConnectionTestModalStep['status']) {
         <AppConnectionSection
           v-else-if="activeSection === 'connection'"
           :state="connectionSectionState"
+        />
+
+        <AppRuntimeLogsSection
+          v-else-if="activeSection === 'runtime'"
+          :logs="logs"
+        />
+
+        <AppSkillsSection
+          v-else-if="activeSection === 'skill'"
+          :state="skillSectionState"
         />
 
         <AppSettingsSection

@@ -30,6 +30,7 @@ use crate::{
         windows_native_ensure_node_plan, windows_native_ensure_ssh_plan, wsl_bootstrap_plan,
         wsl_ensure_ssh_plan, InstallPlan, Platform, MANUAL_INSTALL_URL, WINDOWS_NODE_MIN_MAJOR,
     },
+    openclaw_management,
     operation_supervisor::{
         attach_child, cancel_requested, clear_child, finish_task, new_shared_operation_state,
         push_event, request_stop, snapshot_events, snapshot_task, start_task, update_step,
@@ -47,12 +48,14 @@ use crate::{
     secret_store::{LocalSecretStore, SecretStore},
     types::{
         CompanyProfile, ConnectionTestEvent, ConnectionTestEventStatus, ConnectionTestResult,
-        ConnectionTestStep, EnvironmentSnapshot, InstallRequest, LocalePreference, LogEntry,
+        ConnectionTestStep, CreateLocalSkillRequest, CreateOpenClawAgentRequest,
+        EnvironmentSnapshot, InstallRequest, LocalePreference, LogEntry, OpenClawAgentBinding,
+        OpenClawAgentSummary, OpenClawSkillCheckReport, OpenClawSkillInfo, OpenClawSkillInventory,
         OperationEvent, OperationEventSource, OperationEventStatus, OperationKind,
         OperationRemediation, OperationRemediationKind, OperationResult, OperationStep,
         OperationTaskPhase, OperationTaskSnapshot, PersistedSettings, RuntimePhase, RuntimeStatus,
         RuntimeTarget, SupportUrlTarget, TargetProfile, ThemePreference, TokenStatus,
-        UiPreferences, UserProfile, WslStatus,
+        UiPreferences, UpdateOpenClawAgentIdentityRequest, UserProfile, WslStatus,
     },
     validation::{
         saved_settings_are_complete, validate_company_profile_with_locale,
@@ -327,6 +330,79 @@ pub fn save_profile(
     mark_configured(&state.runtime, &app);
     let _ = refresh_environment_snapshot(&app, &state, false);
     Ok(settings)
+}
+
+#[tauri::command]
+pub fn list_openclaw_agents() -> Result<Vec<OpenClawAgentSummary>, String> {
+    openclaw_management::list_agents().map_err(err_to_string)
+}
+
+#[tauri::command]
+pub fn create_openclaw_agent(request: CreateOpenClawAgentRequest) -> Result<Value, String> {
+    openclaw_management::create_agent(&request).map_err(err_to_string)
+}
+
+#[tauri::command]
+pub fn update_openclaw_agent_identity(
+    request: UpdateOpenClawAgentIdentityRequest,
+) -> Result<Value, String> {
+    openclaw_management::update_agent_identity(&request).map_err(err_to_string)
+}
+
+#[tauri::command]
+pub fn delete_openclaw_agent(agent_id: String) -> Result<Value, String> {
+    openclaw_management::delete_agent(&agent_id).map_err(err_to_string)
+}
+
+#[tauri::command]
+pub fn list_openclaw_agent_bindings(
+    agent_id: Option<String>,
+) -> Result<Vec<OpenClawAgentBinding>, String> {
+    openclaw_management::list_agent_bindings(agent_id.as_deref()).map_err(err_to_string)
+}
+
+#[tauri::command]
+pub fn add_openclaw_agent_bindings(
+    agent_id: String,
+    bindings: Vec<String>,
+) -> Result<Value, String> {
+    openclaw_management::add_agent_bindings(&agent_id, &bindings).map_err(err_to_string)
+}
+
+#[tauri::command]
+pub fn remove_openclaw_agent_bindings(
+    agent_id: String,
+    bindings: Option<Vec<String>>,
+    remove_all: Option<bool>,
+) -> Result<Value, String> {
+    let bindings = bindings.unwrap_or_default();
+    openclaw_management::remove_agent_bindings(&agent_id, &bindings, remove_all.unwrap_or(false))
+        .map_err(err_to_string)
+}
+
+#[tauri::command]
+pub fn list_openclaw_skills() -> Result<OpenClawSkillInventory, String> {
+    openclaw_management::list_skills().map_err(err_to_string)
+}
+
+#[tauri::command]
+pub fn check_openclaw_skills() -> Result<OpenClawSkillCheckReport, String> {
+    openclaw_management::check_skills().map_err(err_to_string)
+}
+
+#[tauri::command]
+pub fn get_openclaw_skill_info(name: String) -> Result<OpenClawSkillInfo, String> {
+    openclaw_management::get_skill_info(&name).map_err(err_to_string)
+}
+
+#[tauri::command]
+pub fn create_local_openclaw_skill(request: CreateLocalSkillRequest) -> Result<Value, String> {
+    openclaw_management::create_local_skill(&request).map_err(err_to_string)
+}
+
+#[tauri::command]
+pub fn delete_local_openclaw_skill(name: String) -> Result<Value, String> {
+    openclaw_management::delete_local_skill(&name).map_err(err_to_string)
 }
 
 #[tauri::command]

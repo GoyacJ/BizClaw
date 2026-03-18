@@ -1,7 +1,15 @@
 import { createApp, nextTick, reactive, ref } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { EnvironmentSnapshot, OperationTaskSnapshot } from '@/types'
+import type {
+  EnvironmentSnapshot,
+  OpenClawAgentBinding,
+  OpenClawAgentSummary,
+  OpenClawSkillCheckReport,
+  OpenClawSkillInfo,
+  OpenClawSkillInventory,
+  OperationTaskSnapshot,
+} from '@/types'
 
 const mockUiPreferences = {
   theme: 'light' as const,
@@ -117,11 +125,150 @@ vi.mock('@/lib/use-app-model', () => {
       },
     ],
   })
+  const agents = ref<OpenClawAgentSummary[]>([
+    {
+      id: 'main',
+      name: 'Main',
+      identityName: '霸天 (Bàtiān)',
+      identityEmoji: '🐯',
+      identitySource: 'identity',
+      workspace: '/Users/goya/.openclaw/workspace',
+      agentDir: '/Users/goya/.openclaw/agents/main/agent',
+      model: 'minimax-cn/MiniMax-M2.5',
+      bindings: 1,
+      isDefault: true,
+      routes: ['telegram default'],
+    },
+    {
+      id: 'ops',
+      name: 'Ops',
+      identityName: '值班',
+      identityEmoji: '🛠',
+      identitySource: 'config',
+      workspace: '/Users/goya/.openclaw/workspace-ops',
+      agentDir: '/Users/goya/.openclaw/agents/ops/agent',
+      model: 'minimax-cn/MiniMax-M2.5',
+      bindings: 0,
+      isDefault: false,
+      routes: [],
+    },
+  ])
+  const agentBindings = ref<OpenClawAgentBinding[]>([
+    {
+      agentId: 'main',
+      channel: 'telegram',
+      accountId: null,
+      description: 'telegram (default account)',
+    },
+  ])
+  const skillsInventory = ref<OpenClawSkillInventory>({
+    workspaceDir: '/Users/goya/.openclaw/workspace',
+    managedSkillsDir: '/Users/goya/.openclaw/skills',
+    skills: [
+      {
+        name: 'sonoscli',
+        description: 'Control Sonos speakers.',
+        eligible: true,
+        disabled: false,
+        blockedByAllowlist: false,
+        source: 'openclaw-workspace',
+        bundled: false,
+        locationKind: 'workspaceLocal',
+        canDelete: true,
+        missing: {
+          bins: [],
+          anyBins: [],
+          env: [],
+          config: [],
+          os: [],
+        },
+      },
+      {
+        name: 'coding-agent',
+        description: 'Delegate coding tasks.',
+        eligible: true,
+        disabled: false,
+        blockedByAllowlist: false,
+        source: 'openclaw-bundled',
+        bundled: true,
+        locationKind: 'bundled',
+        canDelete: false,
+        missing: {
+          bins: [],
+          anyBins: [],
+          env: [],
+          config: [],
+          os: [],
+        },
+      },
+    ],
+  })
+  const skillsCheck = ref<OpenClawSkillCheckReport>({
+    summary: {
+      total: 2,
+      eligible: 2,
+      disabled: 0,
+      blocked: 0,
+      missingRequirements: 0,
+    },
+    eligible: ['sonoscli', 'coding-agent'],
+    disabled: [],
+    blocked: [],
+    missingRequirements: [],
+  })
+  const selectedSkillInfo = ref<OpenClawSkillInfo | null>({
+    name: 'sonoscli',
+    description: 'Control Sonos speakers.',
+    source: 'openclaw-workspace',
+    bundled: false,
+    locationKind: 'workspaceLocal',
+    canDelete: true,
+    filePath: '/Users/goya/.openclaw/workspace/skills/sonoscli/SKILL.md',
+    baseDir: '/Users/goya/.openclaw/workspace/skills/sonoscli',
+    skillKey: 'sonoscli',
+    homepage: 'https://sonoscli.sh',
+    always: false,
+    disabled: false,
+    blockedByAllowlist: false,
+    eligible: true,
+    requirements: {
+      bins: [],
+      anyBins: [],
+      env: [],
+      config: [],
+      os: [],
+    },
+    missing: {
+      bins: [],
+      anyBins: [],
+      env: [],
+      config: [],
+      os: [],
+    },
+    configChecks: [],
+    install: [],
+  })
 
   return {
     useAppModel: () => ({
-      activeSection: ref<'overview' | 'install' | 'connection' | 'runtime'>('overview'),
+      activeSection: ref<'overview' | 'agent' | 'install' | 'connection' | 'runtime' | 'skill' | 'settings'>('overview'),
       advancedOpen: ref(true),
+      agentsState: {
+        agents,
+        bindings: agentBindings,
+        selectedAgentId: ref('main'),
+        loading: ref(false),
+        mutationBusy: ref(false),
+        error: ref<string | null>(null),
+        refreshAgents: vi.fn(),
+        selectAgent: vi.fn(),
+        createAgent: vi.fn(),
+        updateAgentIdentity: vi.fn(),
+        deleteAgent: vi.fn(),
+        addAgentBindings: vi.fn(),
+        removeAgentBindings: vi.fn(),
+        clearAgentBindings: vi.fn(),
+      },
       busyAction: ref<string | null>(null),
       canSaveProfile: ref(true),
       canStartHostedRuntime: ref(true),
@@ -234,6 +381,20 @@ vi.mock('@/lib/use-app-model', () => {
       saveAndTest: vi.fn(),
       saveBusy: ref(false),
       saveOnly: vi.fn(),
+      skillsState: {
+        inventory: skillsInventory,
+        checkReport: skillsCheck,
+        selectedSkillName: ref('sonoscli'),
+        selectedSkillInfo,
+        loading: ref(false),
+        detailLoading: ref(false),
+        mutationBusy: ref(false),
+        error: ref<string | null>(null),
+        refreshSkills: vi.fn(),
+        selectSkill: vi.fn(),
+        createLocalSkill: vi.fn(),
+        deleteLocalSkill: vi.fn(),
+      },
       sshPasswordInput: ref(''),
       sshStateLabel: ref('已就绪'),
       startHostedRuntime: vi.fn(),
@@ -303,7 +464,7 @@ describe('App operations center', () => {
       node.textContent?.trim(),
     )
 
-    expect(navButtons).toEqual(['概览', '安装与更新', '连接与配置', '运行日志', '设置'])
+    expect(navButtons).toEqual(['概览', '代理(agent)', '安装与更新', '连接与配置', '运行日志', '技能(skill)', '设置'])
     expect(host.textContent).toContain('BIZCLAW')
     expect(host.textContent).not.toContain('操作中心')
     expect(host.textContent).not.toContain('macOS 本机')
@@ -481,6 +642,50 @@ describe('App operations center', () => {
     expect(host.textContent).toContain('当前 BizClaw 版本')
     expect(host.textContent).toContain('最新 BizClaw 版本')
     expect(host.textContent).toContain('立即更新')
+  })
+
+  it('renders agent management content on the agent page', async () => {
+    const { default: App } = await import('./App.vue')
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+
+    app = createApp(App)
+    app.mount(host)
+    await nextTick()
+
+    const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+      .find((node) => node.textContent?.includes('代理(agent)'))
+    button?.click()
+    await nextTick()
+
+    expect(host.textContent).toContain('代理(agent)')
+    expect(host.textContent).toContain('main')
+    expect(host.textContent).toContain('霸天 (Bàtiān)')
+    expect(host.textContent).toContain('Workspace')
+    expect(host.textContent).toContain('telegram (default account)')
+  })
+
+  it('renders skill inventory and keeps bundled skills read-only on the skill page', async () => {
+    const { default: App } = await import('./App.vue')
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+
+    app = createApp(App)
+    app.mount(host)
+    await nextTick()
+
+    const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+      .find((node) => node.textContent?.includes('技能(skill)'))
+    button?.click()
+    await nextTick()
+
+    expect(host.textContent).toContain('技能(skill)')
+    expect(host.textContent).toContain('sonoscli')
+    expect(host.textContent).toContain('coding-agent')
+    expect(host.textContent).toContain('可删除')
+    expect(host.textContent).toContain('只读')
   })
 
   it('shows the global status bar instead of a sidebar summary', async () => {

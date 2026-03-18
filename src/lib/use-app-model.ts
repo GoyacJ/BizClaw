@@ -9,11 +9,21 @@ import {
   type PendingBizClawUpdate,
 } from '@/lib/bizclaw-updater'
 import {
+  addOpenClawAgentBindings,
   checkOpenClawUpdate,
+  checkOpenClawSkills,
+  createLocalOpenClawSkill,
+  createOpenClawAgent,
+  deleteLocalOpenClawSkill,
+  deleteOpenClawAgent,
   detectEnvironment,
+  getOpenClawSkillInfo,
   getOperationEvents,
   getOperationStatus,
   installOpenClaw,
+  listOpenClawAgentBindings,
+  listOpenClawAgents,
+  listOpenClawSkills,
   onConnectionTestEvent,
   onOperationEvent,
   onOperationStatus,
@@ -29,7 +39,9 @@ import {
   stopRuntime,
   streamLogs,
   testConnection,
+  removeOpenClawAgentBindings,
   updateOpenClaw,
+  updateOpenClawAgentIdentity,
 } from '@/lib/api'
 import {
   createEmptyCompanyProfileDraft,
@@ -56,9 +68,16 @@ import type {
   ConnectionTestModalState,
   ConnectionTestModalStep,
   ConnectionTestResult,
+  CreateLocalSkillRequest,
+  CreateOpenClawAgentRequest,
   EnvironmentSnapshot,
   InstallRequest,
   LogEntry,
+  OpenClawAgentBinding,
+  OpenClawAgentSummary,
+  OpenClawSkillCheckReport,
+  OpenClawSkillInfo,
+  OpenClawSkillInventory,
   OperationEvent,
   OperationKind,
   OperationResult,
@@ -70,6 +89,7 @@ import type {
   LocalePreference,
   UiPreferences,
   UserProfile,
+  UpdateOpenClawAgentIdentityRequest,
   WindowsInstallTarget,
 } from '@/types'
 
@@ -208,8 +228,32 @@ function createBizClawUpdateState(): BizClawUpdateState {
   }
 }
 
+function createEmptySkillInventory(): OpenClawSkillInventory {
+  return {
+    workspaceDir: null,
+    managedSkillsDir: null,
+    skills: [],
+  }
+}
+
+function createEmptySkillCheckReport(): OpenClawSkillCheckReport {
+  return {
+    summary: {
+      total: 0,
+      eligible: 0,
+      disabled: 0,
+      blocked: 0,
+      missingRequirements: 0,
+    },
+    eligible: [],
+    disabled: [],
+    blocked: [],
+    missingRequirements: [],
+  }
+}
+
 export function useAppModel() {
-  const activeSection = ref<'overview' | 'install' | 'connection' | 'runtime' | 'settings'>('overview')
+  const activeSection = ref<'overview' | 'agent' | 'install' | 'connection' | 'runtime' | 'skill' | 'settings'>('overview')
   const environment = ref<EnvironmentSnapshot | null>(null)
   const operationTask = ref<OperationTaskSnapshot>(createIdleOperationTask())
   const operationEvents = ref<OperationEvent[]>([])
@@ -229,6 +273,20 @@ export function useAppModel() {
   const tokenInput = ref('')
   const hydratedFromSaved = ref(false)
   const uiPreferences = ref<UiPreferences>(defaultUiPreferences())
+  const openClawAgents = ref<OpenClawAgentSummary[]>([])
+  const openClawAgentBindings = ref<OpenClawAgentBinding[]>([])
+  const selectedAgentId = ref<string | null>(null)
+  const agentsLoading = ref(false)
+  const agentMutationBusy = ref(false)
+  const agentsError = ref<string | null>(null)
+  const skillsInventory = ref<OpenClawSkillInventory>(createEmptySkillInventory())
+  const skillsCheckReport = ref<OpenClawSkillCheckReport>(createEmptySkillCheckReport())
+  const selectedSkillName = ref<string | null>(null)
+  const selectedSkillInfo = ref<OpenClawSkillInfo | null>(null)
+  const skillsLoading = ref(false)
+  const skillDetailLoading = ref(false)
+  const skillMutationBusy = ref(false)
+  const skillsError = ref<string | null>(null)
   const companyProfile = reactive<CompanyProfileDraft>(createEmptyCompanyProfileDraft())
   const userProfile = reactive(defaultUserProfile())
   const targetProfile = reactive(defaultTargetProfile())
@@ -618,6 +676,150 @@ export function useAppModel() {
     operationEvents.value = await getOperationEvents()
   }
 
+  async function refreshAgents() {
+    return withSectionBusy(agentsLoading, agentsError, async () => {
+      const [nextAgents, nextBindings] = await Promise.all([
+        listOpenClawAgents(),
+        listOpenClawAgentBindings(),
+      ])
+
+      openClawAgents.value = nextAgents
+      openClawAgentBindings.value = nextBindings
+      syncSelectedAgent(nextAgents)
+      return nextAgents
+    })
+  }
+
+  function selectAgent(agentId: string) {
+    selectedAgentId.value = agentId
+  }
+
+  async function createAgent(request: CreateOpenClawAgentRequest) {
+    const result = await withSectionBusy(agentMutationBusy, agentsError, () => createOpenClawAgent(request))
+    if (!result) {
+      return
+    }
+
+    await refreshAgents()
+    const nextAgentId = typeof result.agentId === 'string' ? result.agentId : request.name.trim().toLowerCase().replace(/\s+/g, '-')
+    if (nextAgentId) {
+      selectedAgentId.value = nextAgentId
+    }
+  }
+
+  async function updateAgentIdentity(request: UpdateOpenClawAgentIdentityRequest) {
+    const result = await withSectionBusy(agentMutationBusy, agentsError, () => updateOpenClawAgentIdentity(request))
+    if (!result) {
+      return
+    }
+
+    await refreshAgents()
+    selectedAgentId.value = request.agentId
+  }
+
+  async function deleteAgent(agentId: string) {
+    const result = await withSectionBusy(agentMutationBusy, agentsError, () => deleteOpenClawAgent(agentId))
+    if (!result) {
+      return
+    }
+
+    if (selectedAgentId.value === agentId) {
+      selectedAgentId.value = null
+    }
+    await refreshAgents()
+  }
+
+  async function addAgentBindings(agentId: string, bindings: string[]) {
+    if (bindings.length === 0) {
+      return
+    }
+
+    const result = await withSectionBusy(agentMutationBusy, agentsError, () => addOpenClawAgentBindings(agentId, bindings))
+    if (!result) {
+      return
+    }
+
+    selectedAgentId.value = agentId
+    await refreshAgents()
+  }
+
+  async function removeAgentBindings(agentId: string, bindings: string[]) {
+    if (bindings.length === 0) {
+      return
+    }
+
+    const result = await withSectionBusy(agentMutationBusy, agentsError, () => removeOpenClawAgentBindings(agentId, bindings))
+    if (!result) {
+      return
+    }
+
+    selectedAgentId.value = agentId
+    await refreshAgents()
+  }
+
+  async function clearAgentBindings(agentId: string) {
+    const result = await withSectionBusy(agentMutationBusy, agentsError, () => removeOpenClawAgentBindings(agentId))
+    if (!result) {
+      return
+    }
+
+    selectedAgentId.value = agentId
+    await refreshAgents()
+  }
+
+  async function refreshSkills() {
+    return withSectionBusy(skillsLoading, skillsError, async () => {
+      const [nextInventory, nextCheckReport] = await Promise.all([
+        listOpenClawSkills(),
+        checkOpenClawSkills(),
+      ])
+
+      skillsInventory.value = nextInventory
+      skillsCheckReport.value = nextCheckReport
+      syncSelectedSkill(nextInventory.skills)
+      return nextInventory
+    })
+  }
+
+  async function selectSkill(name: string) {
+    selectedSkillName.value = name
+    return withSectionBusy(skillDetailLoading, skillsError, async () => {
+      const info = await getOpenClawSkillInfo(name)
+      selectedSkillInfo.value = info
+      return info
+    })
+  }
+
+  async function createLocalSkill(request: CreateLocalSkillRequest) {
+    const result = await withSectionBusy(skillMutationBusy, skillsError, () => createLocalOpenClawSkill(request))
+    if (!result) {
+      return
+    }
+
+    await refreshSkills()
+    await selectSkill(request.name)
+  }
+
+  async function deleteLocalSkill(name: string) {
+    const result = await withSectionBusy(skillMutationBusy, skillsError, () => deleteLocalOpenClawSkill(name))
+    if (!result) {
+      return
+    }
+
+    if (selectedSkillName.value === name) {
+      selectedSkillName.value = null
+      selectedSkillInfo.value = null
+    }
+    await refreshSkills()
+  }
+
+  async function refreshManagementState() {
+    await Promise.all([
+      refreshAgents(),
+      refreshSkills(),
+    ])
+  }
+
   async function syncBizClawCurrentVersion() {
     try {
       const version = await getCurrentBizClawVersion()
@@ -675,6 +877,52 @@ export function useAppModel() {
       lastError.value = error instanceof Error ? error.message : String(error)
       lastErrorAction.value = action
       return null
+    }
+  }
+
+  function errorMessage(error: unknown) {
+    return error instanceof Error ? error.message : String(error)
+  }
+
+  async function withSectionBusy<T>(
+    busyRef: { value: boolean },
+    errorRef: { value: string | null },
+    handler: () => Promise<T>,
+  ): Promise<T | null> {
+    busyRef.value = true
+    errorRef.value = null
+
+    try {
+      return await handler()
+    } catch (error) {
+      errorRef.value = errorMessage(error)
+      return null
+    } finally {
+      busyRef.value = false
+    }
+  }
+
+  function syncSelectedAgent(nextAgents: OpenClawAgentSummary[]) {
+    if (nextAgents.length === 0) {
+      selectedAgentId.value = null
+      return
+    }
+
+    if (!selectedAgentId.value || !nextAgents.some((agent) => agent.id === selectedAgentId.value)) {
+      selectedAgentId.value = nextAgents[0]?.id ?? null
+    }
+  }
+
+  function syncSelectedSkill(nextSkills: OpenClawSkillInventory['skills']) {
+    if (nextSkills.length === 0) {
+      selectedSkillName.value = null
+      selectedSkillInfo.value = null
+      return
+    }
+
+    if (!selectedSkillName.value || !nextSkills.some((skill) => skill.name === selectedSkillName.value)) {
+      selectedSkillName.value = nextSkills[0]?.name ?? null
+      selectedSkillInfo.value = null
     }
   }
 
@@ -1222,6 +1470,7 @@ export function useAppModel() {
   onMounted(() => {
     void initializeSubscriptions()
     void refreshOperationalState({ includeLogs: true })
+    void refreshManagementState()
     void syncBizClawCurrentVersion()
   })
 
@@ -1274,9 +1523,42 @@ export function useAppModel() {
     await updateUiPreferences({ sidebarCollapsed })
   }
 
+  const agentsState = {
+    agents: openClawAgents,
+    bindings: openClawAgentBindings,
+    selectedAgentId,
+    loading: agentsLoading,
+    mutationBusy: agentMutationBusy,
+    error: agentsError,
+    refreshAgents,
+    selectAgent,
+    createAgent,
+    updateAgentIdentity,
+    deleteAgent,
+    addAgentBindings,
+    removeAgentBindings,
+    clearAgentBindings,
+  }
+
+  const skillsState = {
+    inventory: skillsInventory,
+    checkReport: skillsCheckReport,
+    selectedSkillName,
+    selectedSkillInfo,
+    loading: skillsLoading,
+    detailLoading: skillDetailLoading,
+    mutationBusy: skillMutationBusy,
+    error: skillsError,
+    refreshSkills,
+    selectSkill,
+    createLocalSkill,
+    deleteLocalSkill,
+  }
+
   return {
     activeSection,
     advancedOpen,
+    agentsState,
     bizclawUpdate,
     bizclawUpdateActionLabel,
     bizclawUpdateBlockedReason,
@@ -1330,6 +1612,7 @@ export function useAppModel() {
     saveOnly,
     setSidebarCollapsed,
     sshPasswordInput,
+    skillsState,
     startHostedRuntime,
     statusItems,
     stopOperation,

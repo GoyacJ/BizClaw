@@ -147,8 +147,15 @@ describe('tauri api fallback', () => {
       bindings: ['telegram'],
     })
     await api.listOpenClawSkills()
-    await api.checkOpenClawSkills()
     await api.getOpenClawSkillInfo('coding-agent')
+    await api.searchClawHubSkills({
+      query: 'calendar',
+      limit: 3,
+    })
+    await api.installClawHubSkill({
+      slug: 'calendar',
+      location: 'workspaceLocal',
+    })
 
     expect(invoke).toHaveBeenCalledWith('list_openclaw_agents', undefined)
     expect(invoke).toHaveBeenCalledWith('list_openclaw_agent_bindings', { agentId: 'main' })
@@ -161,7 +168,18 @@ describe('tauri api fallback', () => {
       },
     })
     expect(invoke).toHaveBeenCalledWith('list_openclaw_skills', undefined)
-    expect(invoke).toHaveBeenCalledWith('check_openclaw_skills', undefined)
     expect(invoke).toHaveBeenCalledWith('get_openclaw_skill_info', { name: 'coding-agent' })
+    expect(invoke).toHaveBeenCalledWith('search_clawhub_skills', {
+      request: {
+        query: 'calendar',
+        limit: 3,
+      },
+    })
+    expect(invoke).toHaveBeenCalledWith('install_clawhub_skill', {
+      request: {
+        slug: 'calendar',
+        location: 'workspaceLocal',
+      },
+    })
   })
 })

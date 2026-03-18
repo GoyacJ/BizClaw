@@ -2,12 +2,14 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 import type {
+  ClawHubSkillSearchResult,
   CompanyProfile,
   ConnectionTestEvent,
   ConnectionTestResult,
   CreateLocalSkillRequest,
   CreateOpenClawAgentRequest,
   EnvironmentSnapshot,
+  InstallClawHubSkillRequest,
   InstallRequest,
   LogEntry,
   OpenClawAgentBinding,
@@ -18,6 +20,7 @@ import type {
   OperationEvent,
   OperationTaskSnapshot,
   PersistedSettings,
+  SearchClawHubSkillsRequest,
   SupportUrlTarget,
   UpdateOpenClawAgentIdentityRequest,
   UiPreferences,
@@ -227,6 +230,12 @@ export const checkOpenClawSkills = () =>
 
 export const getOpenClawSkillInfo = (name: string) =>
   tauriInvoke<OpenClawSkillInfo>('get_openclaw_skill_info', { name })
+
+export const searchClawHubSkills = (request: SearchClawHubSkillsRequest) =>
+  tauriInvoke<ClawHubSkillSearchResult[]>('search_clawhub_skills', { request })
+
+export const installClawHubSkill = (request: InstallClawHubSkillRequest) =>
+  tauriInvoke<Record<string, unknown>>('install_clawhub_skill', { request })
 
 export const createLocalOpenClawSkill = (request: CreateLocalSkillRequest) =>
   tauriInvoke<Record<string, unknown>>('create_local_openclaw_skill', { request })

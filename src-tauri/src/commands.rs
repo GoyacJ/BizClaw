@@ -47,14 +47,15 @@ use crate::{
     },
     secret_store::{LocalSecretStore, SecretStore},
     types::{
-        CompanyProfile, ConnectionTestEvent, ConnectionTestEventStatus, ConnectionTestResult,
-        ConnectionTestStep, CreateLocalSkillRequest, CreateOpenClawAgentRequest,
-        EnvironmentSnapshot, InstallRequest, LocalePreference, LogEntry, OpenClawAgentBinding,
-        OpenClawAgentSummary, OpenClawSkillCheckReport, OpenClawSkillInfo, OpenClawSkillInventory,
-        OperationEvent, OperationEventSource, OperationEventStatus, OperationKind,
-        OperationRemediation, OperationRemediationKind, OperationResult, OperationStep,
-        OperationTaskPhase, OperationTaskSnapshot, PersistedSettings, RuntimePhase, RuntimeStatus,
-        RuntimeTarget, SupportUrlTarget, TargetProfile, ThemePreference, TokenStatus,
+        ClawHubSkillSearchResult, CompanyProfile, ConnectionTestEvent, ConnectionTestEventStatus,
+        ConnectionTestResult, ConnectionTestStep, CreateLocalSkillRequest,
+        CreateOpenClawAgentRequest, EnvironmentSnapshot, InstallClawHubSkillRequest,
+        InstallRequest, LocalePreference, LogEntry, OpenClawAgentBinding, OpenClawAgentSummary,
+        OpenClawSkillCheckReport, OpenClawSkillInfo, OpenClawSkillInventory, OperationEvent,
+        OperationEventSource, OperationEventStatus, OperationKind, OperationRemediation,
+        OperationRemediationKind, OperationResult, OperationStep, OperationTaskPhase,
+        OperationTaskSnapshot, PersistedSettings, RuntimePhase, RuntimeStatus, RuntimeTarget,
+        SearchClawHubSkillsRequest, SupportUrlTarget, TargetProfile, ThemePreference, TokenStatus,
         UiPreferences, UpdateOpenClawAgentIdentityRequest, UserProfile, WslStatus,
     },
     validation::{
@@ -393,6 +394,18 @@ pub fn check_openclaw_skills() -> Result<OpenClawSkillCheckReport, String> {
 #[tauri::command]
 pub fn get_openclaw_skill_info(name: String) -> Result<OpenClawSkillInfo, String> {
     openclaw_management::get_skill_info(&name).map_err(err_to_string)
+}
+
+#[tauri::command]
+pub fn search_clawhub_skills(
+    request: SearchClawHubSkillsRequest,
+) -> Result<Vec<ClawHubSkillSearchResult>, String> {
+    openclaw_management::search_clawhub_skills(&request).map_err(err_to_string)
+}
+
+#[tauri::command]
+pub fn install_clawhub_skill(request: InstallClawHubSkillRequest) -> Result<Value, String> {
+    openclaw_management::install_clawhub_skill(&request).map_err(err_to_string)
 }
 
 #[tauri::command]

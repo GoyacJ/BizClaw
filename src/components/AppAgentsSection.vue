@@ -12,12 +12,13 @@ import type {
 interface AgentsSectionState {
   agents: Ref<OpenClawAgentSummary[]>
   bindings: Ref<OpenClawAgentBinding[]>
+  bindingsLoading: Ref<boolean>
   selectedAgentId: Ref<string | null>
   loading: Ref<boolean>
   mutationBusy: Ref<boolean>
   error: Ref<string | null>
   refreshAgents: () => Promise<unknown> | unknown
-  selectAgent: (agentId: string) => void
+  selectAgent: (agentId: string) => Promise<unknown> | unknown
   createAgent: (request: CreateOpenClawAgentRequest) => Promise<unknown> | unknown
   updateAgentIdentity: (request: UpdateOpenClawAgentIdentityRequest) => Promise<unknown> | unknown
   deleteAgent: (agentId: string) => Promise<unknown> | unknown
@@ -60,6 +61,17 @@ watch(selectedAgent, (agent) => {
   identityDraft.avatar = ''
 }, { immediate: true })
 
+function resetCreateDraft() {
+  createDraft.name = ''
+  createDraft.workspace = ''
+  createDraft.model = ''
+  createDraft.bindingsText = ''
+}
+
+function closeCreateModal() {
+  createOpen.value = false
+}
+
 function parseBindings(raw: string) {
   return raw
     .split(/\r?\n/)
@@ -79,11 +91,8 @@ async function submitCreateAgent() {
   }
 
   await props.state.createAgent(request)
-  createDraft.name = ''
-  createDraft.workspace = ''
-  createDraft.model = ''
-  createDraft.bindingsText = ''
-  createOpen.value = false
+  resetCreateDraft()
+  closeCreateModal()
 }
 
 async function saveIdentity() {
@@ -146,43 +155,12 @@ async function deleteSelectedAgent() {
       </div>
       <p class="supporting-text">{{ translate('agents.detail') }}</p>
       <div class="button-row">
-        <button class="primary-button" type="button" @click="createOpen = !createOpen">
+        <button class="primary-button" type="button" @click="createOpen = true">
           {{ translate('agents.create') }}
         </button>
         <button class="secondary-button" type="button" :disabled="props.state.loading.value" @click="props.state.refreshAgents">
           {{ translate('agents.refresh') }}
         </button>
-      </div>
-
-      <div v-if="createOpen" class="management-panel">
-        <div class="section-header">
-          <div>
-            <span class="card-label">{{ translate('agents.createTitle') }}</span>
-          </div>
-        </div>
-        <div class="form-grid">
-          <label class="field">
-            <span>{{ translate('agents.name') }}</span>
-            <input v-model="createDraft.name" :placeholder="translate('agents.placeholderName')" />
-          </label>
-          <label class="field">
-            <span>{{ translate('agents.workspacePath') }}</span>
-            <input v-model="createDraft.workspace" :placeholder="translate('agents.placeholderWorkspace')" />
-          </label>
-          <label class="field field--span">
-            <span>{{ translate('agents.modelOptional') }}</span>
-            <input v-model="createDraft.model" placeholder="minimax-cn/MiniMax-M2.5" />
-          </label>
-          <label class="field field--span">
-            <span>{{ translate('agents.bindingsOptional') }}</span>
-            <textarea v-model="createDraft.bindingsText" rows="4" />
-          </label>
-        </div>
-        <div class="button-row button-row--end">
-          <button class="primary-button" type="button" :disabled="props.state.mutationBusy.value" @click="submitCreateAgent">
-            {{ translate('agents.createSubmit') }}
-          </button>
-        </div>
       </div>
     </article>
 
@@ -206,7 +184,7 @@ async function deleteSelectedAgent() {
             class="management-row"
             :data-active="String(agent.id === props.state.selectedAgentId.value)"
             type="button"
-            @click="props.state.selectAgent(agent.id)"
+            @click="void props.state.selectAgent(agent.id)"
           >
             <div class="management-row-main">
               <strong>{{ agent.id }}</strong>
@@ -232,24 +210,24 @@ async function deleteSelectedAgent() {
           </span>
         </div>
 
-        <div class="support-grid support-grid--metrics">
-          <div class="support-tile">
-            <span>{{ translate('agents.workspace') }}</span>
-            <strong>{{ selectedAgent.workspace }}</strong>
+        <dl class="detail-metadata-grid">
+          <div class="detail-metadata-card detail-metadata-card--full">
+            <dt>{{ translate('agents.workspace') }}</dt>
+            <dd :title="selectedAgent.workspace">{{ selectedAgent.workspace }}</dd>
           </div>
-          <div class="support-tile">
-            <span>{{ translate('agents.agentDir') }}</span>
-            <strong>{{ selectedAgent.agentDir }}</strong>
+          <div class="detail-metadata-card detail-metadata-card--full">
+            <dt>{{ translate('agents.agentDir') }}</dt>
+            <dd :title="selectedAgent.agentDir">{{ selectedAgent.agentDir }}</dd>
           </div>
-          <div class="support-tile">
-            <span>{{ translate('agents.model') }}</span>
-            <strong>{{ selectedAgent.model || 'auto' }}</strong>
+          <div class="detail-metadata-card">
+            <dt>{{ translate('agents.model') }}</dt>
+            <dd :title="selectedAgent.model || 'auto'">{{ selectedAgent.model || 'auto' }}</dd>
           </div>
-          <div class="support-tile">
-            <span>{{ translate('agents.bindings') }}</span>
-            <strong>{{ selectedBindings.length }}</strong>
+          <div class="detail-metadata-card">
+            <dt>{{ translate('agents.bindings') }}</dt>
+            <dd>{{ selectedBindings.length }}</dd>
           </div>
-        </div>
+        </dl>
 
         <p class="helper-text">{{ translate('agents.readOnlyHint') }}</p>
 
@@ -286,9 +264,16 @@ async function deleteSelectedAgent() {
             <div>
               <span class="card-label">{{ translate('agents.bindings') }}</span>
             </div>
+            <span v-if="props.state.bindingsLoading.value" class="status-chip" data-tone="active">
+              {{ translate('common.inProgress') }}
+            </span>
           </div>
 
-          <div v-if="selectedBindings.length === 0" class="empty-state">
+          <div v-if="props.state.bindingsLoading.value" class="empty-state">
+            {{ translate('common.inProgress') }}
+          </div>
+
+          <div v-else-if="selectedBindings.length === 0" class="empty-state">
             {{ translate('agents.noBindings') }}
           </div>
 
@@ -324,5 +309,47 @@ async function deleteSelectedAgent() {
     </div>
 
     <p v-if="props.state.error.value" class="error-banner">{{ props.state.error.value }}</p>
+
+    <Teleport to="body">
+      <div v-if="createOpen" class="modal-backdrop">
+        <section class="modal-card surface-card" role="dialog" aria-modal="true" aria-labelledby="create-agent-title">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">{{ translate('agents.eyebrow') }}</p>
+              <h3 id="create-agent-title">{{ translate('agents.createTitle') }}</h3>
+            </div>
+            <span class="status-chip" data-tone="active">
+              {{ translate('agents.title') }}
+            </span>
+          </div>
+          <div class="form-grid">
+            <label class="field">
+              <span>{{ translate('agents.name') }}</span>
+              <input v-model="createDraft.name" :placeholder="translate('agents.placeholderName')" />
+            </label>
+            <label class="field">
+              <span>{{ translate('agents.workspacePath') }}</span>
+              <input v-model="createDraft.workspace" :placeholder="translate('agents.placeholderWorkspace')" />
+            </label>
+            <label class="field field--span">
+              <span>{{ translate('agents.modelOptional') }}</span>
+              <input v-model="createDraft.model" placeholder="minimax-cn/MiniMax-M2.5" />
+            </label>
+            <label class="field field--span">
+              <span>{{ translate('agents.bindingsOptional') }}</span>
+              <textarea v-model="createDraft.bindingsText" rows="4" />
+            </label>
+          </div>
+          <div class="button-row button-row--end">
+            <button class="secondary-button" type="button" :disabled="props.state.mutationBusy.value" @click="closeCreateModal">
+              {{ translate('common.close') }}
+            </button>
+            <button class="primary-button" type="button" :disabled="props.state.mutationBusy.value" @click="submitCreateAgent">
+              {{ translate('agents.createSubmit') }}
+            </button>
+          </div>
+        </section>
+      </div>
+    </Teleport>
   </section>
 </template>

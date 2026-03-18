@@ -541,6 +541,30 @@ pub struct CreateLocalSkillRequest {
     pub location: OpenClawSkillLocationKind,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchClawHubSkillsRequest {
+    pub query: String,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClawHubSkillSearchResult {
+    pub slug: String,
+    pub title: String,
+    #[serde(default)]
+    pub score: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallClawHubSkillRequest {
+    pub slug: String,
+    pub location: OpenClawSkillLocationKind,
+}
+
 fn default_wsl_distro() -> String {
     "Ubuntu".into()
 }

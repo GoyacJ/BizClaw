@@ -12,10 +12,11 @@ use serde_json::{json, Value};
 use crate::{
     process_exec::new_command,
     types::{
-        CreateLocalSkillRequest, CreateOpenClawAgentRequest, OpenClawAgentBinding,
-        OpenClawAgentSummary, OpenClawSkillCheckReport, OpenClawSkillInfo,
-        OpenClawSkillInstallHint, OpenClawSkillInventory, OpenClawSkillLocationKind,
-        OpenClawSkillRequirements, OpenClawSkillSummary, UpdateOpenClawAgentIdentityRequest,
+        ClawHubSkillSearchResult, CreateLocalSkillRequest, CreateOpenClawAgentRequest,
+        InstallClawHubSkillRequest, OpenClawAgentBinding, OpenClawAgentSummary,
+        OpenClawSkillCheckReport, OpenClawSkillInfo, OpenClawSkillInstallHint,
+        OpenClawSkillInventory, OpenClawSkillLocationKind, OpenClawSkillRequirements,
+        OpenClawSkillSummary, SearchClawHubSkillsRequest, UpdateOpenClawAgentIdentityRequest,
     },
 };
 
@@ -439,6 +440,49 @@ pub(crate) fn get_skill_info(name: &str) -> Result<OpenClawSkillInfo> {
     })
 }
 
+pub(crate) fn search_clawhub_skills(
+    request: &SearchClawHubSkillsRequest,
+) -> Result<Vec<ClawHubSkillSearchResult>> {
+    let query = request.query.trim();
+    if query.is_empty() {
+        bail!("Search query is required.");
+    }
+
+    let mut args = vec!["search".to_string(), query.to_string()];
+    let limit = request.limit.unwrap_or(8).clamp(1, 20);
+    args.push("--limit".to_string());
+    args.push(limit.to_string());
+
+    let capture = run_clawhub_command(&args, None)?;
+    if !capture.success {
+        bail!("{}", format_command_failure("clawhub", &args, &capture));
+    }
+
+    parse_clawhub_search_results(&capture.stdout)
+}
+
+pub(crate) fn install_clawhub_skill(request: &InstallClawHubSkillRequest) -> Result<Value> {
+    let slug = request.slug.trim();
+    if slug.is_empty() {
+        bail!("Skill slug is required.");
+    }
+
+    let inventory = fetch_skill_inventory()?;
+    let install_cwd = resolve_clawhub_install_cwd(&inventory, request.location)?;
+    let args = vec!["install".to_string(), slug.to_string()];
+    let capture = run_clawhub_command(&args, Some(&install_cwd))?;
+    if !capture.success {
+        bail!("{}", format_command_failure("clawhub", &args, &capture));
+    }
+
+    Ok(json!({
+        "skillName": slug,
+        "location": request.location,
+        "cwd": install_cwd,
+        "stdout": capture.stdout.trim(),
+    }))
+}
+
 pub(crate) fn create_local_skill(request: &CreateLocalSkillRequest) -> Result<Value> {
     let roots_inventory = fetch_skill_inventory()?;
     let roots = SkillRoots::from_inventory(&roots_inventory);
@@ -500,6 +544,83 @@ pub(crate) fn delete_local_skill(name: &str) -> Result<Value> {
     }))
 }
 
+fn parse_clawhub_search_results(output: &str) -> Result<Vec<ClawHubSkillSearchResult>> {
+    let mut results = Vec::new();
+
+    for line in output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if line.starts_with("- Searching") || line.starts_with("Searching") {
+            continue;
+        }
+
+        let (line_without_score, score) = split_clawhub_score(line);
+        let Some((slug, title)) = split_clawhub_result_line(line_without_score) else {
+            continue;
+        };
+
+        results.push(ClawHubSkillSearchResult {
+            slug: slug.to_string(),
+            title: title.to_string(),
+            score,
+        });
+    }
+
+    Ok(results)
+}
+
+fn split_clawhub_score(line: &str) -> (&str, Option<f64>) {
+    let Some(start) = line.rfind(" (") else {
+        return (line.trim_end(), None);
+    };
+    if !line.ends_with(')') {
+        return (line.trim_end(), None);
+    }
+
+    let Ok(score) = line[start + 2..line.len() - 1].parse::<f64>() else {
+        return (line.trim_end(), None);
+    };
+    (line[..start].trim_end(), Some(score))
+}
+
+fn split_clawhub_result_line(line: &str) -> Option<(&str, &str)> {
+    let bytes = line.as_bytes();
+    for index in 0..bytes.len().saturating_sub(1) {
+        if bytes[index] == b' ' && bytes[index + 1] == b' ' {
+            let slug = line[..index].trim();
+            let title = line[index..].trim();
+            if !slug.is_empty() && !title.is_empty() {
+                return Some((slug, title));
+            }
+        }
+    }
+    None
+}
+
+fn resolve_clawhub_install_cwd(
+    inventory: &CliSkillInventory,
+    location: OpenClawSkillLocationKind,
+) -> Result<PathBuf> {
+    match location {
+        OpenClawSkillLocationKind::WorkspaceLocal => inventory
+            .workspace_dir
+            .as_ref()
+            .map(PathBuf::from)
+            .context("OpenClaw did not report a workspace directory for skill installs."),
+        OpenClawSkillLocationKind::SharedLocal => inventory
+            .managed_skills_dir
+            .as_ref()
+            .map(PathBuf::from)
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .context("OpenClaw did not report a shared skills directory for skill installs."),
+        OpenClawSkillLocationKind::Bundled | OpenClawSkillLocationKind::External => {
+            bail!("Only workspace-local or shared-local skills can be installed.")
+        }
+    }
+}
+
 fn cleaned_bindings(bindings: &[String]) -> Vec<String> {
     bindings
         .iter()
@@ -524,16 +645,35 @@ fn run_openclaw_json<T: DeserializeOwned>(args: &[&str]) -> Result<T> {
 fn run_openclaw_json_from_args<T: DeserializeOwned>(args: &[String]) -> Result<T> {
     let capture = run_openclaw_command(args)?;
     if !capture.success {
-        bail!("{}", format_command_failure(args, &capture));
+        bail!("{}", format_command_failure("openclaw", args, &capture));
     }
     parse_json_from_capture(&capture)
 }
 
 fn run_openclaw_command(args: &[String]) -> Result<CommandCapture> {
-    let output = new_command("openclaw", args)
-        .stdin(Stdio::null())
-        .output()
-        .context("Failed to run the OpenClaw CLI.")?;
+    run_command_capture("openclaw", args, None).context("Failed to run the OpenClaw CLI.")
+}
+
+fn run_clawhub_command(args: &[String], cwd: Option<&Path>) -> Result<CommandCapture> {
+    if which::which("clawhub").is_ok() {
+        return run_command_capture("clawhub", args, cwd).context("Failed to run the ClawHub CLI.");
+    }
+
+    let mut npx_args = vec!["--yes".to_string(), "clawhub".to_string()];
+    npx_args.extend(args.iter().cloned());
+    run_command_capture("npx", &npx_args, cwd).context("Failed to run ClawHub via npx.")
+}
+
+fn run_command_capture(
+    program: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+) -> Result<CommandCapture> {
+    let mut command = new_command(program, args);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let output = command.stdin(Stdio::null()).output()?;
 
     Ok(CommandCapture {
         success: output.status.success(),
@@ -582,20 +722,20 @@ fn extract_json_value(text: &str) -> Result<Value> {
     }
 }
 
-fn format_command_failure(args: &[String], capture: &CommandCapture) -> String {
+fn format_command_failure(program: &str, args: &[String], capture: &CommandCapture) -> String {
     let rendered_args = args.join(" ");
     let stdout = capture.stdout.trim();
     let stderr = capture.stderr.trim();
     match (stdout.is_empty(), stderr.is_empty()) {
-        (true, true) => format!("OpenClaw command failed: openclaw {rendered_args}"),
+        (true, true) => format!("Command failed: {program} {rendered_args}"),
         (false, true) => {
-            format!("OpenClaw command failed: openclaw {rendered_args}\n{stdout}")
+            format!("Command failed: {program} {rendered_args}\n{stdout}")
         }
         (true, false) => {
-            format!("OpenClaw command failed: openclaw {rendered_args}\n{stderr}")
+            format!("Command failed: {program} {rendered_args}\n{stderr}")
         }
         (false, false) => {
-            format!("OpenClaw command failed: openclaw {rendered_args}\n{stdout}\n{stderr}")
+            format!("Command failed: {program} {rendered_args}\n{stdout}\n{stderr}")
         }
     }
 }
@@ -721,14 +861,16 @@ fn resolve_listed_skill_dir(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, path::PathBuf};
 
     use tempfile::tempdir;
 
     use super::{
-        create_local_skill_in_root, extract_json_value, resolve_deletable_skill_dir,
+        create_local_skill_in_root, extract_json_value, parse_clawhub_search_results,
+        resolve_clawhub_install_cwd, resolve_deletable_skill_dir, CliSkillInventory,
         LocalSkillLocation, SkillRoots,
     };
+    use crate::types::OpenClawSkillLocationKind;
 
     #[test]
     fn extracts_json_payload_after_warning_prefix() {
@@ -835,5 +977,64 @@ mod tests {
             fs::canonicalize(&shared_skill).expect("canonical shared skill")
         );
         assert_eq!(shared_kind, LocalSkillLocation::SharedLocal);
+    }
+
+    #[test]
+    fn parses_clawhub_search_output_with_progress_prefix() {
+        let output =
+            "- Searching\ncalendar  Calendar  (3.724)\nfeishu-calendar  feishu-calendar  (3.641)\n";
+
+        let results =
+            parse_clawhub_search_results(output).expect("search results should be parsed");
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].slug, "calendar");
+        assert_eq!(results[0].title, "Calendar");
+        assert_eq!(results[0].score, Some(3.724));
+        assert_eq!(results[1].slug, "feishu-calendar");
+    }
+
+    #[test]
+    fn resolves_clawhub_install_cwds_for_workspace_and_shared_roots() {
+        let inventory = CliSkillInventory {
+            workspace_dir: Some("/tmp/demo-workspace".into()),
+            managed_skills_dir: Some("/tmp/.openclaw/skills".into()),
+            skills: Vec::new(),
+        };
+
+        let workspace_cwd =
+            resolve_clawhub_install_cwd(&inventory, OpenClawSkillLocationKind::WorkspaceLocal)
+                .expect("workspace cwd");
+        let shared_cwd =
+            resolve_clawhub_install_cwd(&inventory, OpenClawSkillLocationKind::SharedLocal)
+                .expect("shared cwd");
+
+        assert_eq!(workspace_cwd, PathBuf::from("/tmp/demo-workspace"));
+        assert_eq!(shared_cwd, PathBuf::from("/tmp/.openclaw"));
+    }
+
+    #[test]
+    fn rejects_missing_roots_for_clawhub_install_resolution() {
+        let missing_workspace = CliSkillInventory {
+            workspace_dir: None,
+            managed_skills_dir: Some("/tmp/.openclaw/skills".into()),
+            skills: Vec::new(),
+        };
+        let workspace_error = resolve_clawhub_install_cwd(
+            &missing_workspace,
+            OpenClawSkillLocationKind::WorkspaceLocal,
+        )
+        .expect_err("missing workspace should fail");
+        assert!(workspace_error.to_string().contains("workspace directory"));
+
+        let missing_shared = CliSkillInventory {
+            workspace_dir: Some("/tmp/demo-workspace".into()),
+            managed_skills_dir: None,
+            skills: Vec::new(),
+        };
+        let shared_error =
+            resolve_clawhub_install_cwd(&missing_shared, OpenClawSkillLocationKind::SharedLocal)
+                .expect_err("missing shared root should fail");
+        assert!(shared_error.to_string().contains("shared skills directory"));
     }
 }

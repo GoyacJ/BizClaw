@@ -354,6 +354,22 @@ export interface OpenClawSkillInfo {
   canDelete: boolean
 }
 
+export interface SearchClawHubSkillsRequest {
+  query: string
+  limit?: number
+}
+
+export interface ClawHubSkillSearchResult {
+  slug: string
+  title: string
+  score: number | null
+}
+
+export interface InstallClawHubSkillRequest {
+  slug: string
+  location: Extract<OpenClawSkillLocationKind, 'workspaceLocal' | 'sharedLocal'>
+}
+
 export interface CreateLocalSkillRequest {
   name: string
   location: Extract<OpenClawSkillLocationKind, 'workspaceLocal' | 'sharedLocal'>

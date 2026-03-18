@@ -11,13 +11,12 @@ import {
 import {
   addOpenClawAgentBindings,
   checkOpenClawUpdate,
-  checkOpenClawSkills,
-  createLocalOpenClawSkill,
   createOpenClawAgent,
   deleteLocalOpenClawSkill,
   deleteOpenClawAgent,
   detectEnvironment,
   getOpenClawSkillInfo,
+  installClawHubSkill,
   getOperationEvents,
   getOperationStatus,
   installOpenClaw,
@@ -34,6 +33,7 @@ import {
   openSupportUrl,
   saveProfile,
   saveUiPreferences,
+  searchClawHubSkills,
   startRuntime,
   stopOpenClawOperation,
   stopRuntime,
@@ -62,15 +62,16 @@ import {
 import { appLocaleRef, setAppLocale, translate } from '@/lib/i18n'
 import type {
   BizClawUpdateState,
+  ClawHubSkillSearchResult,
   CompanyProfileDraft,
   ConnectionTestEvent,
   InstallRemediationModalState,
   ConnectionTestModalState,
   ConnectionTestModalStep,
   ConnectionTestResult,
-  CreateLocalSkillRequest,
   CreateOpenClawAgentRequest,
   EnvironmentSnapshot,
+  InstallClawHubSkillRequest,
   InstallRequest,
   LogEntry,
   OpenClawAgentBinding,
@@ -83,6 +84,7 @@ import type {
   OperationResult,
   OperationTaskSnapshot,
   RuntimeStatus,
+  SearchClawHubSkillsRequest,
   SupportUrlTarget,
   TargetProfile,
   ThemePreference,
@@ -252,6 +254,47 @@ function createEmptySkillCheckReport(): OpenClawSkillCheckReport {
   }
 }
 
+function hasMissingSkillRequirements(missing: OpenClawSkillCheckReport['missingRequirements'][number]['missing'] | OpenClawSkillInventory['skills'][number]['missing']) {
+  return missing.bins.length > 0
+    || missing.anyBins.length > 0
+    || missing.env.length > 0
+    || missing.config.length > 0
+    || missing.os.length > 0
+}
+
+function buildSkillCheckReport(inventory: OpenClawSkillInventory): OpenClawSkillCheckReport {
+  const eligible = inventory.skills
+    .filter((skill) => skill.eligible)
+    .map((skill) => skill.name)
+  const disabled = inventory.skills
+    .filter((skill) => skill.disabled)
+    .map((skill) => skill.name)
+  const blocked = inventory.skills
+    .filter((skill) => skill.blockedByAllowlist)
+    .map((skill) => skill.name)
+  const missingRequirements = inventory.skills
+    .filter((skill) => !skill.eligible && !skill.disabled && !skill.blockedByAllowlist && hasMissingSkillRequirements(skill.missing))
+    .map((skill) => ({
+      name: skill.name,
+      missing: skill.missing,
+      install: [],
+    }))
+
+  return {
+    summary: {
+      total: inventory.skills.length,
+      eligible: eligible.length,
+      disabled: disabled.length,
+      blocked: blocked.length,
+      missingRequirements: missingRequirements.length,
+    },
+    eligible,
+    disabled,
+    blocked,
+    missingRequirements,
+  }
+}
+
 export function useAppModel() {
   const activeSection = ref<'overview' | 'agent' | 'install' | 'connection' | 'runtime' | 'skill' | 'settings'>('overview')
   const environment = ref<EnvironmentSnapshot | null>(null)
@@ -275,10 +318,13 @@ export function useAppModel() {
   const uiPreferences = ref<UiPreferences>(defaultUiPreferences())
   const openClawAgents = ref<OpenClawAgentSummary[]>([])
   const openClawAgentBindings = ref<OpenClawAgentBinding[]>([])
+  const agentBindingsLoading = ref(false)
   const selectedAgentId = ref<string | null>(null)
   const agentsLoading = ref(false)
   const agentMutationBusy = ref(false)
   const agentsError = ref<string | null>(null)
+  const agentBindingsCache = shallowRef<Record<string, OpenClawAgentBinding[]>>({})
+  const pendingAgentBindingsRequests = new Map<string, Promise<OpenClawAgentBinding[] | null>>()
   const skillsInventory = ref<OpenClawSkillInventory>(createEmptySkillInventory())
   const skillsCheckReport = ref<OpenClawSkillCheckReport>(createEmptySkillCheckReport())
   const selectedSkillName = ref<string | null>(null)
@@ -287,6 +333,10 @@ export function useAppModel() {
   const skillDetailLoading = ref(false)
   const skillMutationBusy = ref(false)
   const skillsError = ref<string | null>(null)
+  const skillSearchResults = ref<ClawHubSkillSearchResult[]>([])
+  const skillSearchBusy = ref(false)
+  const skillInfoCache = shallowRef<Record<string, OpenClawSkillInfo>>({})
+  const pendingSkillInfoRequests = new Map<string, Promise<OpenClawSkillInfo | null>>()
   const companyProfile = reactive<CompanyProfileDraft>(createEmptyCompanyProfileDraft())
   const userProfile = reactive(defaultUserProfile())
   const targetProfile = reactive(defaultTargetProfile())
@@ -676,22 +726,119 @@ export function useAppModel() {
     operationEvents.value = await getOperationEvents()
   }
 
+  function setAgentBindingsCache(agentId: string, bindings: OpenClawAgentBinding[]) {
+    agentBindingsCache.value = {
+      ...agentBindingsCache.value,
+      [agentId]: bindings,
+    }
+  }
+
+  function removeAgentBindingsCache(agentId: string) {
+    const nextCache = { ...agentBindingsCache.value }
+    delete nextCache[agentId]
+    agentBindingsCache.value = nextCache
+  }
+
+  function pruneAgentBindingsCache(nextAgents: OpenClawAgentSummary[]) {
+    const validAgentIds = new Set(nextAgents.map((agent) => agent.id))
+    const nextCache = Object.fromEntries(
+      Object.entries(agentBindingsCache.value).filter(([agentId]) => validAgentIds.has(agentId)),
+    )
+    agentBindingsCache.value = nextCache
+  }
+
+  async function ensureAgentBindingsLoaded(agentId: string, options: { force?: boolean } = {}) {
+    const normalizedAgentId = agentId.trim()
+    if (!normalizedAgentId) {
+      openClawAgentBindings.value = []
+      return []
+    }
+
+    if (!options.force) {
+      const cachedBindings = agentBindingsCache.value[normalizedAgentId]
+      if (cachedBindings) {
+        openClawAgentBindings.value = cachedBindings
+        return cachedBindings
+      }
+
+      const pendingRequest = pendingAgentBindingsRequests.get(normalizedAgentId)
+      if (pendingRequest) {
+        const pendingBindings = await pendingRequest
+        if (pendingBindings && selectedAgentId.value === normalizedAgentId) {
+          openClawAgentBindings.value = pendingBindings
+        }
+        return pendingBindings ?? []
+      }
+    }
+
+    const request = withSectionBusy(agentBindingsLoading, agentsError, async () => {
+      const bindings = await listOpenClawAgentBindings(normalizedAgentId)
+      setAgentBindingsCache(normalizedAgentId, bindings)
+      if (selectedAgentId.value === normalizedAgentId) {
+        openClawAgentBindings.value = bindings
+      }
+      return bindings
+    })
+    pendingAgentBindingsRequests.set(normalizedAgentId, request)
+
+    try {
+      const bindings = await request
+      return bindings ?? []
+    } finally {
+      pendingAgentBindingsRequests.delete(normalizedAgentId)
+    }
+  }
+
+  function setSkillInfoCache(name: string, info: OpenClawSkillInfo) {
+    skillInfoCache.value = {
+      ...skillInfoCache.value,
+      [name]: info,
+    }
+  }
+
+  function removeSkillInfoCache(name: string) {
+    const nextCache = { ...skillInfoCache.value }
+    delete nextCache[name]
+    skillInfoCache.value = nextCache
+  }
+
+  function pruneSkillInfoCache(nextSkills: OpenClawSkillInventory['skills']) {
+    const validSkillNames = new Set(nextSkills.map((skill) => skill.name))
+    skillInfoCache.value = Object.fromEntries(
+      Object.entries(skillInfoCache.value).filter(([name]) => validSkillNames.has(name)),
+    )
+  }
+
   async function refreshAgents() {
     return withSectionBusy(agentsLoading, agentsError, async () => {
-      const [nextAgents, nextBindings] = await Promise.all([
-        listOpenClawAgents(),
-        listOpenClawAgentBindings(),
-      ])
-
+      const nextAgents = await listOpenClawAgents()
       openClawAgents.value = nextAgents
-      openClawAgentBindings.value = nextBindings
+      pruneAgentBindingsCache(nextAgents)
       syncSelectedAgent(nextAgents)
+      if (!selectedAgentId.value) {
+        openClawAgentBindings.value = []
+        return nextAgents
+      }
+
+      await ensureAgentBindingsLoaded(selectedAgentId.value)
       return nextAgents
     })
   }
 
-  function selectAgent(agentId: string) {
-    selectedAgentId.value = agentId
+  async function selectAgent(agentId: string) {
+    const nextAgentId = agentId.trim()
+    if (!nextAgentId) {
+      return
+    }
+
+    selectedAgentId.value = nextAgentId
+    if (agentBindingsCache.value[nextAgentId]) {
+      openClawAgentBindings.value = agentBindingsCache.value[nextAgentId] ?? []
+      return openClawAgentBindings.value
+    }
+
+    openClawAgentBindings.value = []
+    return ensureAgentBindingsLoaded(nextAgentId)
   }
 
   async function createAgent(request: CreateOpenClawAgentRequest) {
@@ -703,7 +850,7 @@ export function useAppModel() {
     await refreshAgents()
     const nextAgentId = typeof result.agentId === 'string' ? result.agentId : request.name.trim().toLowerCase().replace(/\s+/g, '-')
     if (nextAgentId) {
-      selectedAgentId.value = nextAgentId
+      await selectAgent(nextAgentId)
     }
   }
 
@@ -714,7 +861,7 @@ export function useAppModel() {
     }
 
     await refreshAgents()
-    selectedAgentId.value = request.agentId
+    await selectAgent(request.agentId)
   }
 
   async function deleteAgent(agentId: string) {
@@ -723,8 +870,10 @@ export function useAppModel() {
       return
     }
 
+    removeAgentBindingsCache(agentId)
     if (selectedAgentId.value === agentId) {
       selectedAgentId.value = null
+      openClawAgentBindings.value = []
     }
     await refreshAgents()
   }
@@ -739,6 +888,7 @@ export function useAppModel() {
       return
     }
 
+    removeAgentBindingsCache(agentId)
     selectedAgentId.value = agentId
     await refreshAgents()
   }
@@ -753,6 +903,7 @@ export function useAppModel() {
       return
     }
 
+    removeAgentBindingsCache(agentId)
     selectedAgentId.value = agentId
     await refreshAgents()
   }
@@ -763,41 +914,82 @@ export function useAppModel() {
       return
     }
 
+    removeAgentBindingsCache(agentId)
     selectedAgentId.value = agentId
     await refreshAgents()
   }
 
   async function refreshSkills() {
     return withSectionBusy(skillsLoading, skillsError, async () => {
-      const [nextInventory, nextCheckReport] = await Promise.all([
-        listOpenClawSkills(),
-        checkOpenClawSkills(),
-      ])
-
+      const nextInventory = await listOpenClawSkills()
       skillsInventory.value = nextInventory
-      skillsCheckReport.value = nextCheckReport
+      skillsCheckReport.value = buildSkillCheckReport(nextInventory)
+      pruneSkillInfoCache(nextInventory.skills)
       syncSelectedSkill(nextInventory.skills)
       return nextInventory
     })
   }
 
   async function selectSkill(name: string) {
-    selectedSkillName.value = name
-    return withSectionBusy(skillDetailLoading, skillsError, async () => {
-      const info = await getOpenClawSkillInfo(name)
-      selectedSkillInfo.value = info
+    const nextName = name.trim()
+    if (!nextName) {
+      return null
+    }
+
+    selectedSkillName.value = nextName
+    const cachedInfo = skillInfoCache.value[nextName]
+    if (cachedInfo) {
+      selectedSkillInfo.value = cachedInfo
+      return cachedInfo
+    }
+
+    const pendingRequest = pendingSkillInfoRequests.get(nextName)
+    if (pendingRequest) {
+      return pendingRequest
+    }
+
+    selectedSkillInfo.value = null
+    const request = withSectionBusy(skillDetailLoading, skillsError, async () => {
+      const info = await getOpenClawSkillInfo(nextName)
+      setSkillInfoCache(nextName, info)
+      if (selectedSkillName.value === nextName) {
+        selectedSkillInfo.value = info
+      }
       return info
     })
+    pendingSkillInfoRequests.set(nextName, request)
+
+    try {
+      return await request
+    } finally {
+      pendingSkillInfoRequests.delete(nextName)
+    }
   }
 
-  async function createLocalSkill(request: CreateLocalSkillRequest) {
-    const result = await withSectionBusy(skillMutationBusy, skillsError, () => createLocalOpenClawSkill(request))
+  async function searchInstallableSkills(request: SearchClawHubSkillsRequest) {
+    const results = await withSectionBusy(skillSearchBusy, skillsError, () => searchClawHubSkills(request))
+    if (!results) {
+      return []
+    }
+
+    skillSearchResults.value = results
+    return results
+  }
+
+  function clearSkillSearch() {
+    skillSearchResults.value = []
+  }
+
+  async function installSkill(request: InstallClawHubSkillRequest) {
+    const result = await withSectionBusy(skillMutationBusy, skillsError, () => installClawHubSkill(request))
     if (!result) {
       return
     }
 
+    skillSearchResults.value = []
     await refreshSkills()
-    await selectSkill(request.name)
+    const nextSkillName = typeof result.skillName === 'string' ? result.skillName : request.slug
+    await selectSkill(nextSkillName)
   }
 
   async function deleteLocalSkill(name: string) {
@@ -806,6 +998,7 @@ export function useAppModel() {
       return
     }
 
+    removeSkillInfoCache(name)
     if (selectedSkillName.value === name) {
       selectedSkillName.value = null
       selectedSkillInfo.value = null
@@ -905,12 +1098,17 @@ export function useAppModel() {
   function syncSelectedAgent(nextAgents: OpenClawAgentSummary[]) {
     if (nextAgents.length === 0) {
       selectedAgentId.value = null
+      openClawAgentBindings.value = []
       return
     }
 
     if (!selectedAgentId.value || !nextAgents.some((agent) => agent.id === selectedAgentId.value)) {
       selectedAgentId.value = nextAgents[0]?.id ?? null
     }
+
+    openClawAgentBindings.value = selectedAgentId.value
+      ? (agentBindingsCache.value[selectedAgentId.value] ?? [])
+      : []
   }
 
   function syncSelectedSkill(nextSkills: OpenClawSkillInventory['skills']) {
@@ -922,8 +1120,11 @@ export function useAppModel() {
 
     if (!selectedSkillName.value || !nextSkills.some((skill) => skill.name === selectedSkillName.value)) {
       selectedSkillName.value = nextSkills[0]?.name ?? null
-      selectedSkillInfo.value = null
     }
+
+    selectedSkillInfo.value = selectedSkillName.value
+      ? (skillInfoCache.value[selectedSkillName.value] ?? null)
+      : null
   }
 
   async function withInstallBusy<T>(
@@ -1526,6 +1727,7 @@ export function useAppModel() {
   const agentsState = {
     agents: openClawAgents,
     bindings: openClawAgentBindings,
+    bindingsLoading: agentBindingsLoading,
     selectedAgentId,
     loading: agentsLoading,
     mutationBusy: agentMutationBusy,
@@ -1543,15 +1745,19 @@ export function useAppModel() {
   const skillsState = {
     inventory: skillsInventory,
     checkReport: skillsCheckReport,
+    searchResults: skillSearchResults,
     selectedSkillName,
     selectedSkillInfo,
     loading: skillsLoading,
+    searchBusy: skillSearchBusy,
     detailLoading: skillDetailLoading,
     mutationBusy: skillMutationBusy,
     error: skillsError,
     refreshSkills,
     selectSkill,
-    createLocalSkill,
+    searchInstallableSkills,
+    clearSkillSearch,
+    installSkill,
     deleteLocalSkill,
   }
 

@@ -16,6 +16,39 @@ export interface OperationsSummary {
   tone: 'idle' | 'active' | 'complete' | 'error'
 }
 
+const MOJIBAKE_MARKERS = [
+  '鍒',
+  '鎿',
+  '妫',
+  '鏇',
+  '鏈',
+  '宸叉',
+  '璇峰',
+  '闅ч亾',
+  '閴存潈',
+  '銆?',
+  '€?',
+]
+
+export function looksLikeMojibake(message: string | null | undefined): boolean {
+  if (!message) {
+    return false
+  }
+
+  return MOJIBAKE_MARKERS.some((marker) => message.includes(marker))
+}
+
+export function sanitizeDisplayText(
+  message: string | null | undefined,
+  fallback: string,
+): string {
+  if (!message || looksLikeMojibake(message)) {
+    return fallback
+  }
+
+  return message
+}
+
 export function phaseLabel(phase: RuntimePhase): string {
   void appLocaleRef.value
   switch (phase) {
@@ -149,7 +182,10 @@ export function buildOperationsSummary(
   if (operationTask?.phase === 'cancelled') {
     return {
       title: translate('runtime.operationsSummary.cancelledTitle'),
-      detail: operationTask.lastResult?.followUp ?? translate('runtime.operationsSummary.cancelledDetail'),
+      detail: sanitizeDisplayText(
+        operationTask.lastResult?.followUp,
+        translate('runtime.operationsSummary.cancelledDetail'),
+      ),
       tone: 'active',
     }
   }
@@ -165,7 +201,10 @@ export function buildOperationsSummary(
   if (operationTask?.phase === 'error' && operationTask.lastResult && !operationTask.lastResult.success) {
     return {
       title: translate('runtime.operationsSummary.failedTitle'),
-      detail: operationTask.lastResult.followUp,
+      detail: sanitizeDisplayText(
+        operationTask.lastResult.followUp,
+        translate('runtime.operationsSummary.failedDetail'),
+      ),
       tone: 'error',
     }
   }
@@ -179,7 +218,14 @@ export function buildOperationsSummary(
         : operationTask.kind === 'update'
           ? translate('runtime.operationsSummary.completedUpdate')
           : translate('runtime.operationsSummary.completedInstall'),
-      detail: operationTask.lastResult.followUp,
+      detail: sanitizeDisplayText(
+        operationTask.lastResult.followUp,
+        operationTask.kind === 'update'
+          ? translate('runtime.operationsSummary.completedUpdate')
+          : operationTask.kind === 'checkUpdate'
+            ? translate('runtime.operationsSummary.installedReady')
+            : translate('runtime.operationsSummary.completedInstall'),
+      ),
       tone: 'complete',
     }
   }
@@ -201,14 +247,20 @@ export function buildOperationsSummary(
 
   return {
     title: translate('runtime.operationsSummary.installMissing'),
-    detail: snapshot?.installRecommendation ?? translate('runtime.operationsSummary.installMissingDetail'),
+    detail: sanitizeDisplayText(
+      snapshot?.installRecommendation,
+      translate('runtime.operationsSummary.installMissingDetail'),
+    ),
     tone: 'idle',
   }
 }
 
 export function latestOperationDetail(events: OperationEvent[]): string {
   void appLocaleRef.value
-  return events[events.length - 1]?.message ?? translate('runtime.operationsSummary.latestOperationEmpty')
+  return sanitizeDisplayText(
+    events[events.length - 1]?.message,
+    translate('runtime.operationsSummary.latestOperationEmpty'),
+  )
 }
 
 export function startRuntimeDisabledReason(
@@ -241,7 +293,10 @@ export function startRuntimeDisabledReason(
   }
 
   if (snapshot.tokenStatus === 'error') {
-    return snapshot.tokenStatusMessage ?? translate('runtime.startDisabled.tokenError')
+    return sanitizeDisplayText(
+      snapshot.tokenStatusMessage,
+      translate('runtime.startDisabled.tokenError'),
+    )
   }
 
   if (snapshot.tokenStatus !== 'saved') {
@@ -262,7 +317,7 @@ export function startRuntimeDisabledReason(
 export function runtimeDetail(status: RuntimeStatus): string {
   void appLocaleRef.value
   if (status.lastError) {
-    return status.lastError
+    return sanitizeDisplayText(status.lastError, translate('runtime.detail.idle'))
   }
 
   if (status.phase === 'running') {

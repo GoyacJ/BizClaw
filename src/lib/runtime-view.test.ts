@@ -2,13 +2,15 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   buildOperationsSummary,
+  latestOperationDetail,
   operationTaskPhaseLabel,
   operationStepLabel,
+  runtimeDetail,
   runtimeTargetLabel,
   startRuntimeDisabledReason,
   tokenStatusLabel,
 } from './runtime-view'
-import { setAppLocale } from './i18n'
+import { setAppLocale, translate } from './i18n'
 import type { EnvironmentSnapshot, OperationResult, OperationTaskSnapshot } from '@/types'
 
 describe('runtime view helpers', () => {
@@ -151,6 +153,39 @@ describe('runtime view helpers', () => {
 
   it('does not block runtime start while environment detection is still pending', () => {
     expect(startRuntimeDisabledReason(null, false)).toBeNull()
+  })
+
+  it('falls back when token status messaging is mojibake', () => {
+    const snapshot = createSnapshot({
+      openclawInstalled: true,
+      hasSavedProfile: true,
+      tokenStatus: 'error',
+      tokenStatusMessage: '鍒濆鍖栧け璐ワ紝璇风◢鍚庨噸璇曘€',
+    })
+
+    expect(startRuntimeDisabledReason(snapshot, false)).toBe(translate('runtime.startDisabled.tokenError'))
+  })
+
+  it('falls back when runtime errors are mojibake', () => {
+    expect(runtimeDetail({
+      phase: 'error',
+      sshConnected: false,
+      nodeConnected: false,
+      gatewayConnected: false,
+      lastError: '鍒濆鍖栧け璐ワ紝璇风◢鍚庨噸璇曘€',
+    })).toBe(translate('runtime.detail.idle'))
+  })
+
+  it('falls back when the latest operation event is mojibake', () => {
+    expect(latestOperationDetail([
+      {
+        id: 1,
+        step: 'installOpenClaw',
+        timestamp: '2026-03-18T10:00:00Z',
+        level: 'info',
+        message: '鍒濆鍖栧け璐ワ紝璇风◢鍚庨噸璇曘€',
+      },
+    ])).toBe(translate('runtime.operationsSummary.latestOperationEmpty'))
   })
 })
 

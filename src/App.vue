@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import AppAgentsSection from './components/AppAgentsSection.vue'
 import AppConnectionSection from './components/AppConnectionSection.vue'
@@ -106,6 +106,15 @@ const sectionTitle = computed(() => sections.value.find((item) => item.key === a
 const sidebarCollapsed = computed(() => uiPreferences.value.sidebarCollapsed)
 const sidebarHoverExpanded = ref(false)
 const sidebarDisplayCollapsed = computed(() => sidebarCollapsed.value && !sidebarHoverExpanded.value)
+const connectionTestOutputExpanded = ref(false)
+const connectionTestHasOutput = computed(() => Boolean(
+  connectionTestModal.result && (connectionTestModal.result.stdout || connectionTestModal.result.stderr),
+))
+
+watch(() => connectionTestModal.open, () => {
+  connectionTestOutputExpanded.value = false
+})
+
 const latestLogSummary = computed(() => {
   const latestLog = logs.value[logs.value.length - 1]
 
@@ -395,8 +404,14 @@ function connectionStepLabel(status: ConnectionTestModalStep['status']) {
           </li>
         </ol>
 
+        <div v-if="connectionTestHasOutput" class="button-row">
+          <button class="secondary-button" @click="connectionTestOutputExpanded = !connectionTestOutputExpanded">
+            {{ connectionTestOutputExpanded ? translate('connectionTest.hideOutput') : translate('connectionTest.showOutput') }}
+          </button>
+        </div>
+
         <div
-          v-if="connectionTestModal.result && (connectionTestModal.result.stdout || connectionTestModal.result.stderr)"
+          v-if="connectionTestOutputExpanded && connectionTestModal.result && (connectionTestModal.result.stdout || connectionTestModal.result.stderr)"
           class="connection-test-output"
         >
           <div v-if="connectionTestModal.result.stdout">

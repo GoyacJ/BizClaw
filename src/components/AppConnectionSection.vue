@@ -145,7 +145,7 @@ const props = defineProps<{
         </div>
         <p class="supporting-text">{{ props.state.connectionTestInlineSummary.value }}</p>
         <div
-          v-if="props.state.connectionTestInlineResult.value && (props.state.connectionTestInlineResult.value.stdout || props.state.connectionTestInlineResult.value.stderr)"
+          v-if="props.state.connectionTestInlinePhase.value === 'error' && props.state.connectionTestInlineResult.value && (props.state.connectionTestInlineResult.value.stdout || props.state.connectionTestInlineResult.value.stderr)"
           class="connection-test-output"
         >
           <div v-if="props.state.connectionTestInlineResult.value.stdout">

@@ -600,6 +600,38 @@ describe('App operations center', () => {
     expect(host.textContent).toContain('停止托管')
   })
 
+  it('keeps connection test diagnostics collapsed by default in the modal', async () => {
+    const { useAppModel } = await import('@/lib/use-app-model')
+    const model = useAppModel()
+    model.connectionTestModal.value.open = true
+    model.connectionTestModal.value.phase = 'success'
+    model.connectionTestModal.value.summary = 'Gateway 鉴权通过。'
+    model.connectionTestModal.value.result = {
+      success: true,
+      step: 'gatewayProbe',
+      summary: 'Gateway 鉴权通过。',
+      stdout: 'very large stdout payload',
+      stderr: '',
+    }
+
+    const { default: App } = await import('./App.vue')
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+
+    app = createApp(App)
+    app.mount(host)
+    await nextTick()
+
+    expect(document.body.textContent).toContain('Gateway 鉴权通过。')
+    expect(document.body.textContent).not.toContain('very large stdout payload')
+
+    model.connectionTestModal.value.open = false
+    model.connectionTestModal.value.phase = 'idle'
+    model.connectionTestModal.value.summary = ''
+    model.connectionTestModal.value.result = null
+  })
+
   it('renders the live install console and stop control on the install page', async () => {
     const { default: App } = await import('./App.vue')
 

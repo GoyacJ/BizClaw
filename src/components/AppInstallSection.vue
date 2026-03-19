@@ -13,6 +13,7 @@ import type {
 interface InstallSectionState {
   environment: Ref<EnvironmentSnapshot | null>
   operationsSummary: Ref<OperationsSummary>
+  windowsAdminNotice: Ref<string>
   platformLabel: Ref<string>
   sshStateLabel: Ref<string>
   operationTask: Ref<OperationTaskSnapshot>
@@ -90,6 +91,10 @@ function wslSummary(discovery: WindowsDiscovery | null | undefined) {
         </span>
       </div>
       <p class="supporting-text">{{ props.state.operationsSummary.value.detail }}</p>
+      <div v-if="props.state.windowsAdminNotice.value" class="inline-notice" data-tone="active">
+        <span class="inline-notice-label">{{ translate('install.windowsNoticeLabel') }}</span>
+        <p>{{ props.state.windowsAdminNotice.value }}</p>
+      </div>
       <div class="support-grid">
         <div class="support-tile">
           <span>{{ translate('install.runtimeTarget') }}</span>

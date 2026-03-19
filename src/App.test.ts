@@ -429,6 +429,7 @@ vi.mock('@/lib/use-app-model', () => {
         autoConnect: true,
         runInBackground: true,
       }),
+      windowsAdminNotice: ref('Windows 环境下安装与更新，需要管理员权限运行。'),
       windowsInstallChoiceModalOpen: ref(false),
       setSidebarCollapsed: setSidebarCollapsedMock,
     }),
@@ -603,6 +604,21 @@ describe('App operations center', () => {
     expect(host.textContent).toContain('安装 / 更新输出')
     expect(host.textContent).toContain('installing...')
     expect(host.textContent).toContain('停止')
+    expect(host.textContent).toContain('Windows 环境下安装与更新，需要管理员权限运行。')
+  })
+
+  it('shows the administrator notice in the overview snapshot hero area', async () => {
+    const { default: App } = await import('./App.vue')
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+
+    app = createApp(App)
+    app.mount(host)
+    await nextTick()
+
+    expect(host.textContent).toContain('权限提示')
+    expect(host.textContent).toContain('Windows 环境下安装与更新，需要管理员权限运行。')
   })
 
   it('keeps BizClaw app updates out of the install page', async () => {

@@ -12,6 +12,7 @@ interface OverviewCard {
 const props = defineProps<{
   operationsSummary: OperationsSummary
   overviewCards: OverviewCard[]
+  windowsAdminNotice: string
   goInstall: () => void
   goConnection: () => void
 }>()
@@ -23,6 +24,10 @@ const props = defineProps<{
       <p class="eyebrow">{{ translate('overview.eyebrow') }}</p>
       <h3>{{ props.operationsSummary.title }}</h3>
       <p class="supporting-text">{{ props.operationsSummary.detail }}</p>
+      <div v-if="props.windowsAdminNotice" class="inline-notice" data-tone="active">
+        <span class="inline-notice-label">{{ translate('install.windowsNoticeLabel') }}</span>
+        <p>{{ props.windowsAdminNotice }}</p>
+      </div>
       <div class="hero-actions">
         <button class="primary-button" @click="props.goInstall">{{ translate('overview.goInstall') }}</button>
         <button class="secondary-button" @click="props.goConnection">{{ translate('overview.goConnection') }}</button>

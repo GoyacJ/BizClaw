@@ -1578,6 +1578,8 @@ describe('useAppModel', () => {
 
     model.closeConnectionTestModal()
     expect(model.connectionTestModal.open).toBe(false)
+    expect(model.connectionTestInlineVisible.value).toBe(true)
+    expect(model.connectionTestInlinePhase.value).toBe('running')
 
     resolveTest({
       success: true,
@@ -1590,6 +1592,112 @@ describe('useAppModel', () => {
     await flushPromises()
 
     expect(model.connectionTestModal.open).toBe(false)
+    expect(model.connectionTestInlineVisible.value).toBe(true)
+    expect(model.connectionTestInlinePhase.value).toBe('success')
+    expect(model.connectionTestInlineSummary.value).toBe('Connection is ready.')
+    expect(model.connectionTestInlineResult.value?.stdout).toBe('ok')
+  })
+
+  it('allows reopening and closing the connection test modal after closing a previous run', async () => {
+    apiMocks.detectEnvironment.mockResolvedValue(createSnapshot())
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.saveProfile.mockResolvedValue({
+      companyProfile: {
+        sshHost: 'example.com',
+        sshUser: 'root',
+        localPort: 18889,
+        remoteBindHost: '127.0.0.1',
+        remoteBindPort: 18789,
+      },
+      userProfile: {
+        displayName: 'BizClaw',
+        autoConnect: true,
+        runInBackground: true,
+      },
+      targetProfile: {
+        wslDistro: 'Ubuntu',
+      },
+    })
+    const pendingTests: Array<(result: {
+      success: boolean
+      step: 'save' | 'sshTunnel' | 'gatewayProbe'
+      summary: string
+      stdout: string
+      stderr: string
+    }) => void> = []
+    apiMocks.testConnection.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          pendingTests.push(resolve)
+        }),
+    )
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+
+    const firstPending = model.saveAndTest()
+    await flushPromises()
+    model.closeConnectionTestModal()
+    expect(model.connectionTestModal.open).toBe(false)
+
+    pendingTests.shift()?.({
+      success: true,
+      step: 'gatewayProbe',
+      summary: 'First connection is ready.',
+      stdout: 'ok',
+      stderr: '',
+    })
+    await firstPending
+    await flushPromises()
+
+    expect(model.connectionTestModal.open).toBe(false)
+    expect(model.connectionTestModal.phase).toBe('idle')
+    expect(model.connectionTestInlinePhase.value).toBe('success')
+
+    const secondPending = model.saveAndTest()
+    await flushPromises()
+
+    expect(model.connectionTestModal.open).toBe(true)
+    expect(model.connectionTestModal.phase).toBe('running')
+
+    model.closeConnectionTestModal()
+    expect(model.connectionTestModal.open).toBe(false)
+    expect(model.connectionTestInlinePhase.value).toBe('running')
+
+    pendingTests.shift()?.({
+      success: true,
+      step: 'gatewayProbe',
+      summary: 'Second connection is ready.',
+      stdout: 'ok',
+      stderr: '',
+    })
+    await secondPending
+    await flushPromises()
+
+    expect(model.connectionTestModal.open).toBe(false)
+    expect(model.connectionTestModal.phase).toBe('idle')
+    expect(model.connectionTestInlineSummary.value).toBe('Second connection is ready.')
   })
 
   it('does not wait for environment refresh before finishing a successful connection test', async () => {
@@ -2356,6 +2464,44 @@ describe('useAppModel', () => {
 
     expect(apiMocks.detectEnvironment).toHaveBeenCalledTimes(2)
     expect(model.environment.value).toEqual(refreshedSnapshot)
+  })
+
+  it('shows the Windows administrator run hint on the overview card after install', async () => {
+    apiMocks.detectEnvironment.mockResolvedValue(createSnapshot({
+      os: 'windows',
+      runtimeTarget: 'windowsNative',
+      openclawInstalled: true,
+      updateAvailable: false,
+      latestOpenclawVersion: null,
+    }))
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+
+    const openclawCard = model.overviewCards.value.find((card) => card.label === 'OpenClaw')
+    expect(openclawCard?.detail).toContain('请手动以管理员身份运行 BizClaw')
   })
 })
 

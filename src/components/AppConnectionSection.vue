@@ -3,7 +3,7 @@ import type { Ref } from 'vue'
 
 import { translate } from '@/lib/i18n'
 import { phaseLabel } from '@/lib/runtime-view'
-import type { CompanyProfileDraft, RuntimeStatus, TargetProfile, UserProfile } from '@/types'
+import type { CompanyProfileDraft, ConnectionTestResult, RuntimeStatus, TargetProfile, UserProfile } from '@/types'
 
 interface ConnectionSectionState {
   advancedOpen: Ref<boolean>
@@ -19,6 +19,10 @@ interface ConnectionSectionState {
   tokenStateLabel: Ref<string>
   profileError: Ref<string | null>
   connectionTestDisabledReason: Ref<string | null>
+  connectionTestInlinePhase: Ref<'idle' | 'running' | 'success' | 'error'>
+  connectionTestInlineSummary: Ref<string>
+  connectionTestInlineResult: Ref<ConnectionTestResult | null>
+  connectionTestInlineVisible: Ref<boolean>
   saveOnly: () => Promise<void> | void
   saveAndTest: () => Promise<void> | void
   runtimeStatus: Ref<RuntimeStatus>
@@ -119,6 +123,40 @@ const props = defineProps<{
         <button class="primary-button" :disabled="!props.state.canTestConnection.value" @click="props.state.saveAndTest">
           {{ translate('connection.saveAndTest') }}
         </button>
+      </div>
+      <div v-if="props.state.connectionTestInlineVisible.value" class="connection-inline-feedback">
+        <div class="section-header">
+          <div>
+            <p class="eyebrow">{{ translate('connectionTest.modalEyebrow') }}</p>
+            <h4>{{ translate('connectionTest.modalTitle') }}</h4>
+          </div>
+          <span
+            class="status-chip"
+            :data-tone="props.state.connectionTestInlinePhase.value === 'success' ? 'success' : props.state.connectionTestInlinePhase.value === 'error' ? 'error' : 'active'"
+          >
+            {{
+              props.state.connectionTestInlinePhase.value === 'success'
+                ? translate('connectionTest.pass')
+                : props.state.connectionTestInlinePhase.value === 'error'
+                  ? translate('connectionTest.fail')
+                  : translate('connectionTest.running')
+            }}
+          </span>
+        </div>
+        <p class="supporting-text">{{ props.state.connectionTestInlineSummary.value }}</p>
+        <div
+          v-if="props.state.connectionTestInlineResult.value && (props.state.connectionTestInlineResult.value.stdout || props.state.connectionTestInlineResult.value.stderr)"
+          class="connection-test-output"
+        >
+          <div v-if="props.state.connectionTestInlineResult.value.stdout">
+            <span class="card-label">{{ translate('common.stdout') }}</span>
+            <pre>{{ props.state.connectionTestInlineResult.value.stdout }}</pre>
+          </div>
+          <div v-if="props.state.connectionTestInlineResult.value.stderr">
+            <span class="card-label">{{ translate('common.stderr') }}</span>
+            <pre>{{ props.state.connectionTestInlineResult.value.stderr }}</pre>
+          </div>
+        </div>
       </div>
     </article>
 

@@ -125,6 +125,16 @@ vi.mock('@/lib/use-app-model', () => {
       },
     ],
   })
+  const connectionTestInlinePhase = ref<'idle' | 'running' | 'success' | 'error'>('idle')
+  const connectionTestInlineResult = ref<{
+    success: boolean
+    step: 'save' | 'sshTunnel' | 'gatewayProbe'
+    summary: string
+    stdout: string
+    stderr: string
+  } | null>(null)
+  const connectionTestInlineSummary = ref('')
+  const connectionTestInlineVisible = ref(false)
   const agents = ref<OpenClawAgentSummary[]>([
     {
       id: 'main',
@@ -282,6 +292,10 @@ vi.mock('@/lib/use-app-model', () => {
       connectionTestBusy: ref(false),
       connectionTestDisabledReason: ref<string | null>(null),
       connectionTestCloseDisabled: ref(false),
+      connectionTestInlinePhase,
+      connectionTestInlineResult,
+      connectionTestInlineSummary,
+      connectionTestInlineVisible,
       connectionTestModal,
       confirmInstallRemediation: vi.fn(),
       companyProfile: reactive({

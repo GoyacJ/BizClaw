@@ -83,6 +83,7 @@ const {
   tokenStateLabel,
   tokenStateToneValue,
   uiPreferences,
+  windowsAdminNotice,
   updateCli,
   userProfile,
 } = useAppModel()
@@ -146,6 +147,7 @@ const goConnection = () => {
 const installSectionState = {
   environment,
   operationsSummary,
+  windowsAdminNotice,
   platformLabel,
   sshStateLabel,
   operationTask,
@@ -303,6 +305,7 @@ function connectionStepLabel(status: ConnectionTestModalStep['status']) {
           v-if="activeSection === 'overview'"
           :operations-summary="operationsSummary"
           :overview-cards="overviewCards"
+          :windows-admin-notice="windowsAdminNotice"
           :go-install="goInstall"
           :go-connection="goConnection"
         />

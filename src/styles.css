@@ -475,6 +475,35 @@ h3 {
   flex-wrap: wrap;
 }
 
+.inline-notice {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--chip-active-border);
+  border-radius: 18px;
+  background: linear-gradient(180deg, var(--blue-soft), transparent);
+}
+
+.inline-notice-label {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: var(--blue);
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.inline-notice p {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.6;
+}
+
 .overview-card {
   display: grid;
   gap: 8px;

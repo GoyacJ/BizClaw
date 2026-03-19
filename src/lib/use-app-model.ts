@@ -563,6 +563,12 @@ export function useAppModel() {
       ? translate('install.restartNow')
       : translate('install.installNow')
   ))
+  const windowsAdminNotice = computed(() => {
+    void appLocaleRef.value
+    return environment.value?.os === 'windows'
+      ? translate('install.windowsAdminNotice')
+      : ''
+  })
   const bizclawUpdateDetail = computed(() => {
     void appLocaleRef.value
     switch (bizclawUpdate.value.phase) {
@@ -661,6 +667,27 @@ export function useAppModel() {
       return []
     }
 
+    const openclawOverviewDetail = (() => {
+      if (snapshot.updateAvailable) {
+        const updateMessage = translate('overview.updateAvailable', {
+          version: snapshot.latestOpenclawVersion ?? translate('common.latest'),
+        })
+        if (snapshot.os === 'windows' && snapshot.openclawInstalled) {
+          return `${updateMessage} ${translate('overview.windowsAdminRunHint')}`
+        }
+        return updateMessage
+      }
+
+      if (snapshot.os === 'windows' && snapshot.openclawInstalled) {
+        return translate('overview.windowsAdminRunHint')
+      }
+
+      return sanitizeDisplayText(
+        snapshot.installRecommendation,
+        translate('runtime.operationsSummary.installMissingDetail'),
+      )
+    })()
+
     return [
       {
         label: translate('overview.targetRuntime'),
@@ -685,14 +712,7 @@ export function useAppModel() {
             translate('overview.installed'),
           )
           : translate('overview.notInstalled'),
-        detail: snapshot.updateAvailable
-          ? translate('overview.updateAvailable', {
-            version: snapshot.latestOpenclawVersion ?? translate('common.latest'),
-          })
-          : sanitizeDisplayText(
-            snapshot.installRecommendation,
-            translate('runtime.operationsSummary.installMissingDetail'),
-          ),
+        detail: openclawOverviewDetail,
         tone: snapshot.openclawInstalled ? (snapshot.updateAvailable ? 'active' : 'success') : 'warning',
       },
       {
@@ -1964,6 +1984,7 @@ export function useAppModel() {
     gatewayStateTone,
     sshStateLabel,
     uiPreferences,
+    windowsAdminNotice,
     operationTaskPhaseLabel,
     updateCli,
     userProfile,

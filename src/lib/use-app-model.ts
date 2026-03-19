@@ -753,6 +753,12 @@ export function useAppModel() {
     applyEnvironmentSnapshot(snapshot)
   }
 
+  function scheduleEnvironmentRefresh(options: { force?: boolean } = {}) {
+    setTimeout(() => {
+      void refreshEnvironment(options)
+    }, 0)
+  }
+
   async function refreshLogs() {
     logs.value = await streamLogs()
   }
@@ -1633,7 +1639,7 @@ export function useAppModel() {
       return
     }
 
-    await refreshEnvironment({ force: true })
+    scheduleEnvironmentRefresh({ force: true })
   }
 
   async function saveAndTest() {

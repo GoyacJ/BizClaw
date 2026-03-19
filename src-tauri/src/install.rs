@@ -176,8 +176,35 @@ pub fn verify_windows_ssh_installation(timeout: Duration) -> WindowsInstallVerif
     )
 }
 
+pub fn verify_windows_openclaw_installation(timeout: Duration) -> WindowsInstallVerification {
+    verify_windows_installation(
+        timeout,
+        windows_openclaw_executable_candidates,
+        "--version",
+        |path, version| WindowsInstallVerification::Verified {
+            path: path.to_path_buf(),
+            version: version.to_string(),
+        },
+    )
+}
+
 pub fn windows_local_openclaw_ready() -> bool {
     windows_local_openclaw_version().is_some()
+}
+
+pub fn native_openclaw_program() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        return windows_openclaw_executable_path()
+            .unwrap_or_else(|| PathBuf::from("openclaw"))
+            .to_string_lossy()
+            .into_owned();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        "openclaw".into()
+    }
 }
 
 pub fn windows_local_openclaw_version() -> Option<String> {
@@ -782,7 +809,7 @@ fn windows_git_executable_path() -> Option<PathBuf> {
 }
 
 fn windows_openclaw_executable_path() -> Option<PathBuf> {
-    if let Ok(path) = which::which("openclaw") {
+    if let Some(path) = first_existing_path(windows_openclaw_executable_candidates()) {
         return Some(path);
     }
 
@@ -811,6 +838,36 @@ fn windows_openclaw_executable_path() -> Option<PathBuf> {
     .ok()?;
 
     read_first_non_empty_line(output).map(PathBuf::from)
+}
+
+fn windows_openclaw_executable_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    push_windows_candidate(
+        &mut candidates,
+        env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("npm").join("openclaw.cmd")),
+    );
+    push_windows_candidate(
+        &mut candidates,
+        env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("npm").join("openclaw")),
+    );
+    push_windows_candidate(
+        &mut candidates,
+        env::var_os("LocalAppData")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("npm").join("openclaw.cmd")),
+    );
+    push_windows_candidate(
+        &mut candidates,
+        env::var_os("LocalAppData")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("npm").join("openclaw")),
+    );
+    push_which_candidate(&mut candidates, "openclaw");
+    candidates
 }
 
 fn windows_native_openclaw_install_env() -> Vec<(String, String)> {
@@ -1122,9 +1179,7 @@ mod tests {
         preferred_windows_runtime_target, should_retry_with_elevation, update_plans_for_target,
         windows_native_ensure_git_plan, windows_native_ensure_node_plan,
         windows_native_ensure_ssh_plan, Platform, WindowsInstallVerification,
-        WINDOWS_GIT_FILE_VERSION,
-        WINDOWS_GIT_VERSION,
-        WINDOWS_NODE_MIN_MAJOR,
+        WINDOWS_GIT_FILE_VERSION, WINDOWS_GIT_VERSION, WINDOWS_NODE_MIN_MAJOR,
     };
     use crate::types::{RuntimeTarget, TargetProfile};
     use std::{path::PathBuf, time::Duration};
@@ -1410,5 +1465,23 @@ mod tests {
             result,
             WindowsInstallVerification::CommandFailed { details, .. } if details == "access denied"
         ));
+    }
+
+    #[test]
+    fn windows_openclaw_candidates_prioritize_user_level_npm_shims() {
+        let candidates = super::windows_openclaw_executable_candidates();
+
+        assert!(
+            candidates.iter().any(|path| {
+                path == &PathBuf::from(r"C:\Users\goya\AppData\Roaming\npm\openclaw.cmd")
+            }) || env_path_like_candidates_present(&candidates)
+        );
+    }
+
+    fn env_path_like_candidates_present(candidates: &[PathBuf]) -> bool {
+        candidates.iter().any(|path| {
+            let value = path.to_string_lossy().to_ascii_lowercase();
+            value.ends_with(r"\npm\openclaw.cmd") || value.ends_with(r"\npm\openclaw")
+        })
     }
 }

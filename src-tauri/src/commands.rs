@@ -26,12 +26,12 @@ use crate::{
         read_latest_openclaw_version, read_openclaw_version, resolve_runtime_target,
         should_retry_with_elevation, target_command_available, update_plans_for_target,
         verify_windows_git_installation, verify_windows_node_installation,
-        verify_windows_ssh_installation, windows_local_git_ready, windows_local_git_version,
-        windows_local_node_ready, windows_local_node_version, windows_local_openclaw_ready,
-        windows_local_openclaw_version, windows_local_ssh_ready, windows_native_ensure_git_plan,
-        windows_native_ensure_node_plan, windows_native_ensure_ssh_plan, wsl_bootstrap_plan,
-        wsl_ensure_ssh_plan, InstallPlan, Platform, WindowsInstallVerification, MANUAL_INSTALL_URL,
-        WINDOWS_NODE_MIN_MAJOR,
+        verify_windows_openclaw_installation, verify_windows_ssh_installation,
+        windows_local_git_ready, windows_local_git_version, windows_local_node_ready,
+        windows_local_node_version, windows_local_openclaw_ready, windows_local_openclaw_version,
+        windows_local_ssh_ready, windows_native_ensure_git_plan, windows_native_ensure_node_plan,
+        windows_native_ensure_ssh_plan, wsl_bootstrap_plan, wsl_ensure_ssh_plan, InstallPlan,
+        Platform, WindowsInstallVerification, MANUAL_INSTALL_URL, WINDOWS_NODE_MIN_MAJOR,
     },
     openclaw_management,
     operation_supervisor::{
@@ -3060,12 +3060,10 @@ fn run_install_or_update(
             &plan,
         )?;
         let cancelled = cancel_requested(operation_state);
-        if should_treat_plan_as_success(
-            kind,
-            cancelled,
-            result.success,
-            target_command_available(runtime_target.clone(), &target_profile, "openclaw"),
-        ) {
+        let openclaw_available =
+            target_command_available(runtime_target.clone(), &target_profile, "openclaw")
+                || windows_native_install_verified(kind.clone(), runtime_target.clone());
+        if should_treat_plan_as_success(kind, cancelled, result.success, openclaw_available) {
             return Ok(OperationResult {
                 kind,
                 strategy: result.strategy,
@@ -3085,8 +3083,8 @@ fn run_install_or_update(
                 } else {
                     locale_text(
                         locale,
-                        "OpenClaw 安装完成，请继续保存连接并启动托管；如果当前终端还未识别新命令，请重新打开终端。",
-                        "OpenClaw installation completed. Save the connection settings and start the hosted runtime. If an existing terminal still does not see the new commands, reopen it.",
+                        "OpenClaw 安装完成，请继续保存连接并启动托管；如果当前终端还未识别新命令，请重新打开终端。若 PowerShell 里仍无法直接使用 openclaw，可先改用 openclaw.cmd。",
+                        "OpenClaw installation completed. Save the connection settings and start the hosted runtime. If an existing terminal still does not see the new commands, reopen it. If PowerShell still cannot run openclaw directly, use openclaw.cmd first.",
                     )
                     .into()
                 },
@@ -3149,6 +3147,15 @@ fn should_treat_plan_as_success(
     }
 
     matches!(kind, OperationKind::Install) && openclaw_available
+}
+
+fn windows_native_install_verified(kind: OperationKind, runtime_target: RuntimeTarget) -> bool {
+    matches!(kind, OperationKind::Install)
+        && matches!(runtime_target, RuntimeTarget::WindowsNative)
+        && matches!(
+            verify_windows_openclaw_installation(WINDOWS_INSTALL_VERIFICATION_TIMEOUT),
+            WindowsInstallVerification::Verified { .. }
+        )
 }
 
 fn should_skip_install_for_target(

@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
+    install::native_openclaw_program,
     process_exec::new_command,
     types::{
         ClawHubSkillSearchResult, CreateLocalSkillRequest, CreateOpenClawAgentRequest,
@@ -651,7 +652,8 @@ fn run_openclaw_json_from_args<T: DeserializeOwned>(args: &[String]) -> Result<T
 }
 
 fn run_openclaw_command(args: &[String]) -> Result<CommandCapture> {
-    run_command_capture("openclaw", args, None).context("Failed to run the OpenClaw CLI.")
+    run_command_capture(&native_openclaw_program(), args, None)
+        .context("Failed to run the OpenClaw CLI.")
 }
 
 fn run_clawhub_command(args: &[String], cwd: Option<&Path>) -> Result<CommandCapture> {

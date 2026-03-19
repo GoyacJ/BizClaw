@@ -1508,9 +1508,88 @@ describe('useAppModel', () => {
     await model.saveAndTest()
     await flushPromises()
 
-    expect(apiMocks.saveProfile).toHaveBeenCalledTimes(1)
-    expect(apiMocks.testConnection).toHaveBeenCalledTimes(1)
-    expect(apiMocks.detectEnvironment).toHaveBeenCalledTimes(2)
+  expect(apiMocks.saveProfile).toHaveBeenCalledTimes(1)
+  expect(apiMocks.testConnection).toHaveBeenCalledTimes(1)
+  expect(apiMocks.detectEnvironment).toHaveBeenCalledTimes(2)
+  })
+
+  it('allows closing the connection test modal while the test is still running', async () => {
+    apiMocks.detectEnvironment.mockResolvedValue(createSnapshot())
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.saveProfile.mockResolvedValue({
+      companyProfile: {
+        sshHost: 'example.com',
+        sshUser: 'root',
+        localPort: 18889,
+        remoteBindHost: '127.0.0.1',
+        remoteBindPort: 18789,
+      },
+      userProfile: {
+        displayName: 'BizClaw',
+        autoConnect: true,
+        runInBackground: true,
+      },
+      targetProfile: {
+        wslDistro: 'Ubuntu',
+      },
+    })
+    let resolveTest!: (result: {
+      success: boolean
+      step: 'save' | 'sshTunnel' | 'gatewayProbe'
+      summary: string
+      stdout: string
+      stderr: string
+    }) => void
+    apiMocks.testConnection.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveTest = resolve
+        }),
+    )
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+    const pending = model.saveAndTest()
+    await flushPromises()
+
+    expect(model.connectionTestModal.open).toBe(true)
+    expect(model.connectionTestModal.phase).toBe('running')
+
+    model.closeConnectionTestModal()
+    expect(model.connectionTestModal.open).toBe(false)
+
+    resolveTest({
+      success: true,
+      step: 'gatewayProbe',
+      summary: 'Connection is ready.',
+      stdout: 'ok',
+      stderr: '',
+    })
+    await pending
+    await flushPromises()
+
+    expect(model.connectionTestModal.open).toBe(false)
   })
 
   it('stops the hosted runtime without forcing a redundant environment refresh', async () => {

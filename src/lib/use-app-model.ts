@@ -604,9 +604,7 @@ export function useAppModel() {
   const platformLabel = computed(() => (
     environment.value ? runtimeTargetLabel(environment.value.runtimeTarget) : translate('common.checkPending')
   ))
-  const connectionTestCloseDisabled = computed(() => (
-    connectionTestBusy.value && connectionTestModal.phase === 'running'
-  ))
+  const connectionTestCloseDisabled = computed(() => false)
   const profileError = computed(() => {
     if (lastErrorAction.value === 'save') {
       return sanitizeDisplayText(lastError.value, translate('runtime.startDisabled.tokenError'))
@@ -1331,10 +1329,6 @@ export function useAppModel() {
   }
 
   function closeConnectionTestModal() {
-    if (connectionTestCloseDisabled.value) {
-      return
-    }
-
     resetConnectionTestModal()
   }
 

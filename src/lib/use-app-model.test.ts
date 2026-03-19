@@ -1592,6 +1592,71 @@ describe('useAppModel', () => {
     expect(model.connectionTestModal.open).toBe(false)
   })
 
+  it('does not wait for environment refresh before finishing a successful connection test', async () => {
+    apiMocks.detectEnvironment
+      .mockResolvedValueOnce(createSnapshot())
+      .mockImplementationOnce(
+        () =>
+          new Promise(() => {
+            // Keep the forced refresh pending to verify saveAndTest resolves first.
+          }),
+      )
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.saveProfile.mockResolvedValue({
+      companyProfile: {
+        sshHost: 'example.com',
+        sshUser: 'root',
+        localPort: 18889,
+        remoteBindHost: '127.0.0.1',
+        remoteBindPort: 18789,
+      },
+      userProfile: {
+        displayName: 'BizClaw',
+        autoConnect: true,
+        runInBackground: true,
+      },
+      targetProfile: {
+        wslDistro: 'Ubuntu',
+      },
+    })
+    apiMocks.testConnection.mockResolvedValue({
+      success: true,
+      step: 'gatewayProbe',
+      summary: 'Connection is ready.',
+      stdout: 'ok',
+      stderr: '',
+    })
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+    await expect(model.saveAndTest()).resolves.toBeUndefined()
+    await flushPromises()
+
+    expect(model.connectionTestModal.phase).toBe('success')
+    expect(apiMocks.detectEnvironment).toHaveBeenCalledTimes(2)
+  })
+
   it('stops the hosted runtime without forcing a redundant environment refresh', async () => {
     apiMocks.detectEnvironment.mockResolvedValue(createSnapshot({
       runtimeStatus: {
@@ -1845,7 +1910,7 @@ describe('useAppModel', () => {
         kind: 'install',
         step: 'installOpenClaw',
         success: true,
-        followUp: 'OpenClaw 安装完成，请继续保存连接并启动托管。',
+        followUp: 'OpenClaw 安装完成，请继续保存连接并启动托管；如果当前终端还未识别新命令，请重新打开终端。若 PowerShell 里仍无法直接使用 openclaw，可先改用 openclaw.cmd。',
       }))
     bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
     apiMocks.onRuntimeLog.mockResolvedValue(() => {})

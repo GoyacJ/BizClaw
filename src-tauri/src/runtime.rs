@@ -1,5 +1,7 @@
+#[cfg(not(target_os = "windows"))]
+use crate::install::native_openclaw_program;
 #[cfg(target_os = "windows")]
-use crate::install::windows_ssh_executable_path;
+use crate::install::{native_openclaw_program, windows_ssh_executable_path};
 use crate::types::{CompanyProfile, TargetProfile, UserProfile};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,7 +107,7 @@ pub fn build_native_openclaw_command(
     token: &str,
 ) -> CommandSpec {
     CommandSpec {
-        program: "openclaw".into(),
+        program: native_openclaw_program(),
         args: openclaw_args(profile, user_profile),
         envs: vec![("OPENCLAW_GATEWAY_TOKEN".into(), token.into())],
     }
@@ -134,7 +136,7 @@ pub fn build_native_gateway_status_command(
     timeout_ms: u64,
 ) -> CommandSpec {
     CommandSpec {
-        program: "openclaw".into(),
+        program: native_openclaw_program(),
         args: vec![
             "gateway".into(),
             "status".into(),
@@ -329,6 +331,12 @@ mod tests {
 
         let command = build_native_openclaw_command(&company, &user, "gateway-token");
 
+        #[cfg(target_os = "windows")]
+        assert!(command
+            .program
+            .to_ascii_lowercase()
+            .ends_with("openclaw.cmd"));
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(command.program, "openclaw");
         assert_eq!(
             command.args,
@@ -408,6 +416,12 @@ mod tests {
 
         let command = build_native_gateway_status_command(&profile, "gateway-token", 8_000);
 
+        #[cfg(target_os = "windows")]
+        assert!(command
+            .program
+            .to_ascii_lowercase()
+            .ends_with("openclaw.cmd"));
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(command.program, "openclaw");
         assert_eq!(
             command.args,

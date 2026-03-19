@@ -1673,7 +1673,7 @@ export function useAppModel() {
       connectionTestBusy.value = false
     }
 
-    await refreshEnvironment({ force: true })
+    scheduleEnvironmentRefresh({ force: true })
   }
 
   async function startHostedRuntime() {

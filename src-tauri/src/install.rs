@@ -1469,19 +1469,36 @@ mod tests {
 
     #[test]
     fn windows_openclaw_candidates_prioritize_user_level_npm_shims() {
+        let _appdata = TestEnvVarGuard::set("APPDATA", r"C:\Users\goya\AppData\Roaming");
+        let _local_appdata = TestEnvVarGuard::set("LocalAppData", r"C:\Users\goya\AppData\Local");
         let candidates = super::windows_openclaw_executable_candidates();
+        let expected = PathBuf::from(r"C:\Users\goya\AppData\Roaming")
+            .join("npm")
+            .join("openclaw.cmd");
 
-        assert!(
-            candidates.iter().any(|path| {
-                path == &PathBuf::from(r"C:\Users\goya\AppData\Roaming\npm\openclaw.cmd")
-            }) || env_path_like_candidates_present(&candidates)
-        );
+        assert_eq!(candidates.first(), Some(&expected));
     }
 
-    fn env_path_like_candidates_present(candidates: &[PathBuf]) -> bool {
-        candidates.iter().any(|path| {
-            let value = path.to_string_lossy().to_ascii_lowercase();
-            value.ends_with(r"\npm\openclaw.cmd") || value.ends_with(r"\npm\openclaw")
-        })
+    struct TestEnvVarGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl TestEnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for TestEnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.previous {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
     }
 }

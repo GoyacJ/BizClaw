@@ -1,6 +1,6 @@
 [package]
 name = "bizclaw"
-version = "0.1.31"
+version = "0.1.32"
 description = "BizClaw 桌面接入客户端"
 authors = ["Codex"]
 edition = "2021"

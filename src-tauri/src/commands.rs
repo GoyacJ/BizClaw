@@ -3062,7 +3062,12 @@ fn run_install_or_update(
         let cancelled = cancel_requested(operation_state);
         let openclaw_available =
             target_command_available(runtime_target.clone(), &target_profile, "openclaw")
-                || windows_native_install_verified(kind.clone(), runtime_target.clone());
+                || windows_native_install_verified(kind.clone(), runtime_target.clone())
+                || windows_native_installer_output_indicates_success(
+                    kind.clone(),
+                    runtime_target.clone(),
+                    &result,
+                );
         if should_treat_plan_as_success(kind, cancelled, result.success, openclaw_available) {
             return Ok(OperationResult {
                 kind,
@@ -3156,6 +3161,28 @@ fn windows_native_install_verified(kind: OperationKind, runtime_target: RuntimeT
             verify_windows_openclaw_installation(WINDOWS_INSTALL_VERIFICATION_TIMEOUT),
             WindowsInstallVerification::Verified { .. }
         )
+}
+
+fn windows_native_installer_output_indicates_success(
+    kind: OperationKind,
+    runtime_target: RuntimeTarget,
+    result: &StreamedPlanResult,
+) -> bool {
+    if !matches!(kind, OperationKind::Install)
+        || !matches!(runtime_target, RuntimeTarget::WindowsNative)
+    {
+        return false;
+    }
+
+    [result.stdout.as_str(), result.stderr.as_str()]
+        .into_iter()
+        .any(installer_output_indicates_openclaw_success)
+}
+
+fn installer_output_indicates_openclaw_success(output: &str) -> bool {
+    let normalized = output.to_ascii_lowercase();
+    normalized.contains("openclaw installed successfully")
+        || normalized.contains("[ok] openclaw installed")
 }
 
 fn should_skip_install_for_target(
@@ -3566,8 +3593,9 @@ mod tests {
     use super::{
         apply_ui_preferences_to_snapshot, build_environment_snapshot, cancelled_follow_up,
         evaluate_gateway_probe, gateway_probe_failure_result,
-        gateway_probe_failure_result_with_reason, inspect_token_state, load_saved_token,
-        persist_profile_atomic, should_skip_install_for_target, should_treat_plan_as_success,
+        gateway_probe_failure_result_with_reason, inspect_token_state,
+        installer_output_indicates_openclaw_success, load_saved_token, persist_profile_atomic,
+        should_skip_install_for_target, should_treat_plan_as_success,
         update_available_from_versions, window_background_color_for_theme,
         window_theme_for_preference, with_cached_latest_openclaw_version, CapturedOutput,
         ResolvedEnvironment, RuntimePhase, RuntimeStatus, SettingsStoreAccess, TokenState,
@@ -4006,6 +4034,13 @@ mod tests {
             false,
             false,
             true,
+        ));
+    }
+
+    #[test]
+    fn recognizes_successful_windows_installer_output_even_if_path_check_lags() {
+        assert!(installer_output_indicates_openclaw_success(
+            "[OK] OpenClaw installed\nOpenClaw installed successfully (2026.3.13)!\nopenclaw command not found on PATH."
         ));
     }
 

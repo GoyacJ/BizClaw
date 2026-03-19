@@ -199,6 +199,7 @@ vi.mock('@/lib/use-app-model', () => {
         autoConnect: true,
         runInBackground: true,
       }),
+      windowsAdminNotice: ref(''),
       windowsInstallChoiceModalOpen: ref(false),
     }),
   }

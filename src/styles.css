@@ -1160,6 +1160,12 @@ h3 {
   margin-top: 16px;
 }
 
+.connection-inline-feedback {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid color-mix(in srgb, var(--border-strong) 70%, transparent);
+}
+
 .connection-test-output > div {
   display: grid;
   gap: 8px;

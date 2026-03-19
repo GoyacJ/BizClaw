@@ -100,6 +100,10 @@ vi.mock('@/lib/use-app-model', () => {
       connectionTestBusy: ref(false),
       connectionTestCloseDisabled: ref(false),
       connectionTestDisabledReason: ref<string | null>(null),
+      connectionTestInlinePhase: ref<'idle' | 'running' | 'success' | 'error'>('idle'),
+      connectionTestInlineResult: ref(null),
+      connectionTestInlineSummary: ref(''),
+      connectionTestInlineVisible: ref(false),
       connectionTestModal: ref({
         open: false,
         phase: 'idle',

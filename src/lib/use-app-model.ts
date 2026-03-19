@@ -311,6 +311,9 @@ export function useAppModel() {
   const manualInstallBusy = ref(false)
   const saveBusy = ref(false)
   const connectionTestBusy = ref(false)
+  const connectionTestInlinePhase = ref<'idle' | 'running' | 'success' | 'error'>('idle')
+  const connectionTestInlineSummary = ref('')
+  const connectionTestInlineResult = ref<ConnectionTestResult | null>(null)
   const runtimeStartBusy = ref(false)
   const runtimeStopBusy = ref(false)
   const advancedOpen = ref(false)
@@ -350,6 +353,7 @@ export function useAppModel() {
   const installRemediationModal = reactive<InstallRemediationModalState>(createInstallRemediationModalState())
   const unlistenCallbacks: Array<() => void> = []
   const pendingBizClawUpdate = shallowRef<PendingBizClawUpdate | null>(null)
+  let connectionTestModalSession = 0
   let logFlushTimer: ReturnType<typeof setTimeout> | null = null
   let operationEventFlushTimer: ReturnType<typeof setTimeout> | null = null
   const pendingLogs: LogEntry[] = []
@@ -414,6 +418,14 @@ export function useAppModel() {
     return null
   })
   const canTestConnection = computed(() => canSaveProfile.value && !connectionTestDisabledReason.value)
+  const connectionTestInlineVisible = computed(() => (
+    !connectionTestModal.open
+    && (
+      connectionTestInlinePhase.value === 'running'
+      || connectionTestInlinePhase.value === 'success'
+      || connectionTestInlinePhase.value === 'error'
+    )
+  ))
   const connectDisabledReason = computed(() => (
     startRuntimeDisabledReason(
       environment.value,
@@ -1266,6 +1278,16 @@ export function useAppModel() {
     connectionTestModal.steps = createConnectionTestSteps()
   }
 
+  function setConnectionTestInlineState(
+    phase: 'idle' | 'running' | 'success' | 'error',
+    summary: string,
+    result: ConnectionTestResult | null,
+  ) {
+    connectionTestInlinePhase.value = phase
+    connectionTestInlineSummary.value = summary
+    connectionTestInlineResult.value = result
+  }
+
   function resetInstallRemediationModal() {
     Object.assign(installRemediationModal, createInstallRemediationModalState())
   }
@@ -1346,15 +1368,19 @@ export function useAppModel() {
   }
 
   function openConnectionTestModal() {
+    connectionTestModalSession += 1
+    setConnectionTestInlineState('running', translate('connectionTest.runningSummary'), null)
     connectionTestModal.open = true
     connectionTestModal.phase = 'running'
     connectionTestModal.summary = translate('connectionTest.runningSummary')
     connectionTestModal.result = null
     connectionTestModal.steps = createConnectionTestSteps()
     markConnectionTestStep('save', 'success', translate('connectionTest.saved'))
+    return connectionTestModalSession
   }
 
   function closeConnectionTestModal() {
+    connectionTestModalSession += 1
     resetConnectionTestModal()
   }
 
@@ -1379,9 +1405,16 @@ export function useAppModel() {
     markConnectionTestStep(entry.step, entry.status, entry.message)
   }
 
-  function applyConnectionTestResult(result: ConnectionTestResult) {
+  function applyConnectionTestResult(result: ConnectionTestResult, session: number) {
+    const phase = result.success ? 'success' : 'error'
+    setConnectionTestInlineState(phase, result.summary, result)
+
+    if (!connectionTestModal.open || session !== connectionTestModalSession) {
+      return
+    }
+
     connectionTestModal.result = result
-    connectionTestModal.phase = result.success ? 'success' : 'error'
+    connectionTestModal.phase = phase
     connectionTestModal.summary = result.summary
 
     if (result.success) {
@@ -1670,7 +1703,7 @@ export function useAppModel() {
     }
 
     clearActionError('save')
-    openConnectionTestModal()
+    const connectionTestSession = openConnectionTestModal()
     await nextTick()
 
     connectionTestBusy.value = true
@@ -1679,9 +1712,15 @@ export function useAppModel() {
 
     try {
       const result = await testConnection()
-      applyConnectionTestResult(result)
+      applyConnectionTestResult(result, connectionTestSession)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      setConnectionTestInlineState('error', message, null)
+
+      if (!connectionTestModal.open || connectionTestSession !== connectionTestModalSession) {
+        return
+      }
+
       lastError.value = message
       lastErrorAction.value = 'test'
       connectionTestModal.phase = 'error'
@@ -1933,6 +1972,10 @@ export function useAppModel() {
     connectDisabledReason,
     canStopOperation,
     connectionTestBusy,
+    connectionTestInlinePhase,
+    connectionTestInlineResult,
+    connectionTestInlineSummary,
+    connectionTestInlineVisible,
     connectionTestCloseDisabled,
     connectionTestDisabledReason,
     connectionTestModal,

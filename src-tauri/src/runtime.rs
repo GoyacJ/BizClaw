@@ -19,6 +19,8 @@ pub fn build_native_ssh_command(
     if let Some((askpass_program, password)) = password_auth {
         args.extend([
             "-o".into(),
+            "StrictHostKeyChecking=accept-new".into(),
+            "-o".into(),
             "ExitOnForwardFailure=yes".into(),
             "-o".into(),
             "PreferredAuthentications=password,keyboard-interactive".into(),
@@ -36,6 +38,8 @@ pub fn build_native_ssh_command(
         ]);
     } else {
         args.extend([
+            "-o".into(),
+            "StrictHostKeyChecking=accept-new".into(),
             "-o".into(),
             "BatchMode=yes".into(),
             "-o".into(),
@@ -250,11 +254,16 @@ mod tests {
 
         let command = build_native_ssh_command(&profile, None);
 
+        #[cfg(target_os = "windows")]
+        assert!(command.program.to_ascii_lowercase().ends_with("ssh.exe"));
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(command.program, "ssh");
         assert_eq!(
             command.args,
             vec![
                 "-N",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
                 "-o",
                 "BatchMode=yes",
                 "-o",
@@ -274,11 +283,16 @@ mod tests {
         let command =
             build_native_ssh_command(&profile, Some(("/tmp/bizclaw-askpass", "ssh-password")));
 
+        #[cfg(target_os = "windows")]
+        assert!(command.program.to_ascii_lowercase().ends_with("ssh.exe"));
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(command.program, "ssh");
         assert_eq!(
             command.args,
             vec![
                 "-N",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
                 "-o",
                 "ExitOnForwardFailure=yes",
                 "-o",

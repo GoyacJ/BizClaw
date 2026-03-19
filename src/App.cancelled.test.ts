@@ -104,7 +104,7 @@ vi.mock('@/lib/use-app-model', () => {
       connectionTestInlineResult: ref(null),
       connectionTestInlineSummary: ref(''),
       connectionTestInlineVisible: ref(false),
-      connectionTestModal: ref({
+      connectionTestModal: reactive({
         open: false,
         phase: 'idle',
         summary: '',

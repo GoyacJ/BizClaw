@@ -99,7 +99,7 @@ vi.mock('@/lib/use-app-model', () => {
     startedAt: Date.now(),
     endedAt: null,
   })
-  const connectionTestModal = ref({
+  const connectionTestModal = reactive({
     open: false,
     phase: 'idle',
     summary: '',
@@ -603,10 +603,10 @@ describe('App operations center', () => {
   it('keeps connection test diagnostics collapsed by default in the modal', async () => {
     const { useAppModel } = await import('@/lib/use-app-model')
     const model = useAppModel()
-    model.connectionTestModal.value.open = true
-    model.connectionTestModal.value.phase = 'success'
-    model.connectionTestModal.value.summary = 'Gateway 鉴权通过。'
-    model.connectionTestModal.value.result = {
+    model.connectionTestModal.open = true
+    model.connectionTestModal.phase = 'success'
+    model.connectionTestModal.summary = 'Gateway 鉴权通过。'
+    model.connectionTestModal.result = {
       success: true,
       step: 'gatewayProbe',
       summary: 'Gateway 鉴权通过。',
@@ -626,10 +626,10 @@ describe('App operations center', () => {
     expect(document.body.textContent).toContain('Gateway 鉴权通过。')
     expect(document.body.textContent).not.toContain('very large stdout payload')
 
-    model.connectionTestModal.value.open = false
-    model.connectionTestModal.value.phase = 'idle'
-    model.connectionTestModal.value.summary = ''
-    model.connectionTestModal.value.result = null
+    model.connectionTestModal.open = false
+    model.connectionTestModal.phase = 'idle'
+    model.connectionTestModal.summary = ''
+    model.connectionTestModal.result = null
   })
 
   it('renders the live install console and stop control on the install page', async () => {

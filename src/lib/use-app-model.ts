@@ -17,6 +17,8 @@ import {
   detectEnvironment,
   getOpenClawSkillInfo,
   installClawHubSkill,
+  listChatMessages,
+  listChatSessions,
   getOperationEvents,
   getOperationStatus,
   installOpenClaw,
@@ -34,6 +36,7 @@ import {
   openSupportUrl,
   saveProfile,
   saveUiPreferences,
+  sendChatMessage,
   searchClawHubSkills,
   startRuntime,
   stopOpenClawOperation,
@@ -43,6 +46,7 @@ import {
   removeOpenClawAgentBindings,
   updateOpenClaw,
   updateOpenClawAgentIdentity,
+  createChatSession,
 } from '@/lib/api'
 import {
   createEmptyCompanyProfileDraft,
@@ -64,6 +68,8 @@ import {
 import { appLocaleRef, setAppLocale, translate } from '@/lib/i18n'
 import type {
   BizClawUpdateState,
+  ChatMessage,
+  ChatSessionSummary,
   ClawHubSkillSearchResult,
   CompanyProfileDraft,
   ConnectionTestEvent,
@@ -240,6 +246,10 @@ function createEmptySkillInventory(): OpenClawSkillInventory {
   }
 }
 
+function createEmptyChatSessions(): ChatSessionSummary[] {
+  return []
+}
+
 function createEmptySkillCheckReport(): OpenClawSkillCheckReport {
   return {
     summary: {
@@ -298,7 +308,7 @@ function buildSkillCheckReport(inventory: OpenClawSkillInventory): OpenClawSkill
 }
 
 export function useAppModel() {
-  const activeSection = ref<'overview' | 'agent' | 'install' | 'connection' | 'runtime' | 'skill' | 'settings'>('overview')
+  const activeSection = ref<'overview' | 'chat' | 'agent' | 'install' | 'connection' | 'runtime' | 'skill' | 'settings'>('overview')
   const environment = ref<EnvironmentSnapshot | null>(null)
   const operationTask = ref<OperationTaskSnapshot>(createIdleOperationTask())
   const operationEvents = ref<OperationEvent[]>([])
@@ -346,6 +356,13 @@ export function useAppModel() {
   const skillSearchBusy = ref(false)
   const skillInfoCache = shallowRef<Record<string, OpenClawSkillInfo>>({})
   const pendingSkillInfoRequests = new Map<string, Promise<OpenClawSkillInfo | null>>()
+  const chatSessions = ref<ChatSessionSummary[]>(createEmptyChatSessions())
+  const selectedChatSessionId = ref<string | null>(null)
+  const chatMessages = ref<ChatMessage[]>([])
+  const chatLoading = ref(false)
+  const chatSending = ref(false)
+  const chatError = ref<string | null>(null)
+  const chatLoaded = ref(false)
   const companyProfile = reactive<CompanyProfileDraft>(createEmptyCompanyProfileDraft())
   const userProfile = reactive(defaultUserProfile())
   const targetProfile = reactive(defaultTargetProfile())
@@ -358,6 +375,7 @@ export function useAppModel() {
   let operationEventFlushTimer: ReturnType<typeof setTimeout> | null = null
   const pendingLogs: LogEntry[] = []
   const pendingOperationEvents: OperationEvent[] = []
+  let chatMessagesRequestSequence = 0
   let stopObservingSystemTheme: (() => void) | null = null
 
   const companyProfileComplete = computed(() => isCompanyProfileDraftComplete(companyProfile))
@@ -889,6 +907,117 @@ export function useAppModel() {
     skillInfoCache.value = Object.fromEntries(
       Object.entries(skillInfoCache.value).filter(([name]) => validSkillNames.has(name)),
     )
+  }
+
+  async function loadChatMessages(sessionId: string) {
+    const requestSequence = ++chatMessagesRequestSequence
+    return withSectionBusy(chatLoading, chatError, async () => {
+      const messages = await listChatMessages(sessionId)
+      if (selectedChatSessionId.value === sessionId && requestSequence === chatMessagesRequestSequence) {
+        chatMessages.value = messages
+      }
+      return messages
+    })
+  }
+
+  function syncSelectedChatSession(sessions: ChatSessionSummary[]) {
+    if (sessions.length === 0) {
+      selectedChatSessionId.value = null
+      chatMessages.value = []
+      return
+    }
+    if (!selectedChatSessionId.value || !sessions.some((item) => item.id === selectedChatSessionId.value)) {
+      selectedChatSessionId.value = sessions[0]?.id ?? null
+    }
+  }
+
+  async function refreshChatSessions() {
+    return withSectionBusy(chatLoading, chatError, async () => {
+      const sessions = await listChatSessions()
+      chatSessions.value = sessions
+      syncSelectedChatSession(sessions)
+      chatLoaded.value = true
+      if (selectedChatSessionId.value) {
+        await loadChatMessages(selectedChatSessionId.value)
+      }
+      return sessions
+    })
+  }
+
+  async function selectChatSession(sessionId: string) {
+    const targetId = sessionId.trim()
+    if (!targetId || selectedChatSessionId.value === targetId) {
+      return
+    }
+    selectedChatSessionId.value = targetId
+    chatMessages.value = []
+    await loadChatMessages(targetId)
+  }
+
+  async function createSession(title?: string) {
+    const result = await withSectionBusy(chatLoading, chatError, async () => createChatSession({ title }))
+    if (!result) {
+      return
+    }
+    selectedChatSessionId.value = result.id
+    await refreshChatSessions()
+  }
+
+  async function sendMessage(content: string) {
+    const sessionId = selectedChatSessionId.value
+    const message = content.trim()
+    if (!sessionId || !message) {
+      return
+    }
+
+    const optimisticUserMessageId = `optimistic-user-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    const optimisticUserMessage: ChatMessage = {
+      id: optimisticUserMessageId,
+      role: 'user',
+      content: message,
+      createdAt: Date.now(),
+      status: 'sending',
+    }
+    chatMessages.value = [...chatMessages.value, optimisticUserMessage]
+    chatSending.value = true
+    chatError.value = null
+    try {
+      const result = await sendChatMessage({ sessionId, content: message })
+      if (selectedChatSessionId.value === sessionId) {
+        const optimisticIndex = chatMessages.value.findIndex((item) => item.id === optimisticUserMessageId)
+        if (optimisticIndex >= 0) {
+          const nextMessages = [...chatMessages.value]
+          nextMessages.splice(optimisticIndex, 1, result.userMessage, result.assistantMessage)
+          chatMessages.value = nextMessages
+        } else {
+          chatMessages.value = [...chatMessages.value, result.userMessage, result.assistantMessage]
+        }
+      }
+      chatSessions.value = chatSessions.value.map((session) => (
+        session.id === sessionId
+          ? { ...session, updatedAt: result.assistantMessage.createdAt, preview: result.assistantMessage.content }
+          : session
+      ))
+    } catch (error) {
+      if (selectedChatSessionId.value === sessionId) {
+        chatMessages.value = chatMessages.value.map((item) => (
+          item.id === optimisticUserMessageId
+            ? { ...item, status: 'error' }
+            : item
+        ))
+      }
+      chatError.value = errorMessage(error)
+    } finally {
+      chatSending.value = false
+    }
+  }
+
+  async function retryMessage(messageId: string) {
+    const target = chatMessages.value.find((message) => message.id === messageId)
+    if (!target || target.role !== 'user') {
+      return
+    }
+    await sendMessage(target.content)
   }
 
   async function refreshAgents(options: { ensureSelectedBindings?: boolean } = {}) {
@@ -1843,6 +1972,9 @@ export function useAppModel() {
   })
 
   watch(activeSection, (section) => {
+    if (section === 'chat' && !chatLoaded.value && !chatLoading.value) {
+      void refreshChatSessions()
+    }
     if (section === 'agent' && !agentsLoaded.value && !agentsLoading.value) {
       void refreshAgents()
     }
@@ -1927,6 +2059,19 @@ export function useAppModel() {
     clearAgentBindings,
   }
 
+  const chatState = {
+    sessions: chatSessions,
+    selectedSessionId: selectedChatSessionId,
+    messages: chatMessages,
+    loading: chatLoading,
+    sending: chatSending,
+    error: chatError,
+    createSession,
+    selectSession: selectChatSession,
+    sendMessage,
+    retryMessage,
+  }
+
   const skillsState = {
     inventory: skillsInventory,
     checkReport: skillsCheckReport,
@@ -1954,6 +2099,7 @@ export function useAppModel() {
     activeSection,
     advancedOpen,
     agentsState,
+    chatState,
     bizclawUpdate,
     bizclawUpdateActionLabel,
     bizclawUpdateBlockedReason,

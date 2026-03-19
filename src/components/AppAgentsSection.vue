@@ -45,6 +45,7 @@ const identityDraft = reactive({
   theme: '',
   avatar: '',
 })
+const identitySavedHintVisible = ref(false)
 
 const selectedAgent = computed(() => (
   props.state.agents.value.find((agent) => agent.id === props.state.selectedAgentId.value) ?? null
@@ -59,7 +60,18 @@ watch(selectedAgent, (agent) => {
   identityDraft.emoji = agent?.identityEmoji ?? ''
   identityDraft.theme = ''
   identityDraft.avatar = ''
+  identitySavedHintVisible.value = false
 }, { immediate: true })
+
+const identityDirty = computed(() => {
+  if (!selectedAgent.value) {
+    return false
+  }
+  return (identityDraft.name.trim() || '') !== (selectedAgent.value.identityName || '')
+    || (identityDraft.emoji.trim() || '') !== (selectedAgent.value.identityEmoji || '')
+    || identityDraft.theme.trim().length > 0
+    || identityDraft.avatar.trim().length > 0
+})
 
 function resetCreateDraft() {
   createDraft.name = ''
@@ -107,6 +119,7 @@ async function saveIdentity() {
     theme: identityDraft.theme.trim() || null,
     avatar: identityDraft.avatar.trim() || null,
   })
+  identitySavedHintVisible.value = true
 }
 
 async function appendBindings() {
@@ -230,6 +243,8 @@ async function deleteSelectedAgent() {
         </dl>
 
         <p class="helper-text">{{ translate('agents.readOnlyHint') }}</p>
+        <p v-if="identityDirty" class="helper-text">{{ translate('agents.dirtyHint') }}</p>
+        <p v-else-if="identitySavedHintVisible" class="helper-text">{{ translate('agents.savedHint') }}</p>
 
         <div class="form-grid">
           <label class="field">

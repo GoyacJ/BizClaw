@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     env,
     io::{BufRead, BufReader},
     net::{SocketAddr, TcpStream},
@@ -50,6 +51,7 @@ use crate::{
     },
     secret_store::{LocalSecretStore, SecretStore},
     types::{
+        ChatMessage, ChatMessageRole, ChatMessageStatus, ChatSessionSummary,
         ClawHubSkillSearchResult, CompanyProfile, ConnectionTestEvent, ConnectionTestEventStatus,
         ConnectionTestResult, ConnectionTestStep, CreateLocalSkillRequest,
         CreateOpenClawAgentRequest, EnvironmentSnapshot, InstallClawHubSkillRequest,
@@ -58,7 +60,7 @@ use crate::{
         OperationEventSource, OperationEventStatus, OperationKind, OperationRemediation,
         OperationRemediationKind, OperationResult, OperationStep, OperationTaskPhase,
         OperationTaskSnapshot, PersistedSettings, RuntimePhase, RuntimeStatus, RuntimeTarget,
-        SearchClawHubSkillsRequest, SupportUrlTarget, TargetProfile, ThemePreference, TokenStatus,
+        SearchClawHubSkillsRequest, SendChatMessageRequest, SendChatMessageResult, SupportUrlTarget, TargetProfile, ThemePreference, TokenStatus,
         UiPreferences, UpdateOpenClawAgentIdentityRequest, UserProfile, WindowsDiscovery,
         WindowsDiscoveryPhase, WindowsNativeDiscovery, WindowsWslDiscovery, WslStatus,
     },
@@ -75,6 +77,7 @@ pub struct AppState {
     pub environment_cache: Arc<Mutex<Option<EnvironmentSnapshot>>>,
     environment_probe_active: Arc<AtomicBool>,
     latest_openclaw_version_cache: Arc<Mutex<Option<LatestOpenClawVersionCacheEntry>>>,
+    chat_store: Arc<Mutex<ChatStore>>,
 }
 
 impl Default for AppState {
@@ -86,8 +89,15 @@ impl Default for AppState {
             environment_cache: Arc::new(Mutex::new(None)),
             environment_probe_active: Arc::new(AtomicBool::new(false)),
             latest_openclaw_version_cache: Arc::new(Mutex::new(None)),
+            chat_store: Arc::new(Mutex::new(ChatStore::default())),
         }
     }
+}
+
+#[derive(Debug, Default)]
+struct ChatStore {
+    sessions: Vec<ChatSessionSummary>,
+    messages_by_session_id: HashMap<String, Vec<ChatMessage>>,
 }
 
 const HOMEBREW_INSTALL_URL: &str = "https://brew.sh";
@@ -546,6 +556,124 @@ pub fn save_profile(
 #[tauri::command]
 pub async fn list_openclaw_agents() -> Result<Vec<OpenClawAgentSummary>, String> {
     run_blocking_command(openclaw_management::list_agents).await
+}
+
+#[tauri::command]
+pub fn list_chat_sessions(state: State<'_, AppState>) -> Result<Vec<ChatSessionSummary>, String> {
+    let store = state
+        .chat_store
+        .lock()
+        .map_err(|_| "chat store mutex poisoned".to_string())?;
+    Ok(store.sessions.clone())
+}
+
+#[tauri::command]
+pub fn create_chat_session(
+    state: State<'_, AppState>,
+    request: Option<Value>,
+) -> Result<ChatSessionSummary, String> {
+    let now = timestamp_ms();
+    let mut store = state
+        .chat_store
+        .lock()
+        .map_err(|_| "chat store mutex poisoned".to_string())?;
+    let title = request
+        .and_then(|entry| match entry {
+            Value::String(value) => Some(value),
+            Value::Object(mut value) => value
+                .remove("title")
+                .and_then(|raw_title| raw_title.as_str().map(ToString::to_string)),
+            _ => None,
+        })
+        .map(|entry| entry.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+        .unwrap_or_else(|| "新会话".to_string());
+    let session = ChatSessionSummary {
+        id: format!("session-{now}"),
+        title,
+        updated_at: now,
+        preview: None,
+    };
+    store.sessions.insert(0, session.clone());
+    store
+        .messages_by_session_id
+        .insert(session.id.clone(), Vec::new());
+    Ok(session)
+}
+
+#[tauri::command]
+pub fn list_chat_messages(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<ChatMessage>, String> {
+    let store = state
+        .chat_store
+        .lock()
+        .map_err(|_| "chat store mutex poisoned".to_string())?;
+    Ok(store
+        .messages_by_session_id
+        .get(&session_id)
+        .cloned()
+        .unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn send_chat_message(
+    state: State<'_, AppState>,
+    request: SendChatMessageRequest,
+) -> Result<SendChatMessageResult, String> {
+    let content = request.content.trim();
+    if content.is_empty() {
+        return Err("message content cannot be empty".to_string());
+    }
+
+    let now = timestamp_ms();
+    let mut store = state
+        .chat_store
+        .lock()
+        .map_err(|_| "chat store mutex poisoned".to_string())?;
+
+    if !store.sessions.iter().any(|session| session.id == request.session_id) {
+        return Err("chat session not found".to_string());
+    }
+
+    let user_message = ChatMessage {
+        id: format!("msg-user-{now}"),
+        role: ChatMessageRole::User,
+        content: content.to_string(),
+        created_at: now,
+        status: ChatMessageStatus::Done,
+    };
+    let assistant_message = ChatMessage {
+        id: format!("msg-assistant-{}", now + 1),
+        role: ChatMessageRole::Assistant,
+        content: format!("已收到：{content}"),
+        created_at: now + 1,
+        status: ChatMessageStatus::Done,
+    };
+
+    let messages = store
+        .messages_by_session_id
+        .entry(request.session_id.clone())
+        .or_insert_with(Vec::new);
+    messages.push(user_message.clone());
+    messages.push(assistant_message.clone());
+
+    if let Some(index) = store
+        .sessions
+        .iter()
+        .position(|session| session.id == request.session_id)
+    {
+        let mut session = store.sessions.remove(index);
+        session.updated_at = assistant_message.created_at;
+        session.preview = Some(assistant_message.content.clone());
+        store.sessions.insert(0, session);
+    }
+
+    Ok(SendChatMessageResult {
+        user_message,
+        assistant_message,
+    })
 }
 
 #[tauri::command]

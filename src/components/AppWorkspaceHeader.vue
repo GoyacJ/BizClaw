@@ -16,11 +16,11 @@ const emit = defineEmits<{
 
 <template>
   <header class="workspace-header surface-card">
-    <div>
+    <div class="workspace-header-main">
       <p class="eyebrow">{{ translate('workspace.eyebrow') }}</p>
       <h2>{{ props.sectionTitle }}</h2>
     </div>
-    <div class="workspace-actions">
+    <div class="workspace-actions" role="group" :aria-label="translate('workspace.eyebrow')">
       <span
         class="status-chip"
         :data-tone="props.runtimePhase === 'running' ? 'success' : props.runtimePhase === 'error' ? 'error' : 'neutral'"

@@ -261,7 +261,34 @@ vi.mock('@/lib/use-app-model', () => {
 
   return {
     useAppModel: () => ({
-      activeSection: ref<'overview' | 'agent' | 'install' | 'connection' | 'runtime' | 'skill' | 'settings'>('overview'),
+      activeSection: ref<'overview' | 'chat' | 'agent' | 'install' | 'connection' | 'runtime' | 'skill' | 'settings'>('overview'),
+      chatState: {
+        sessions: ref([
+          {
+            id: 's-1',
+            title: '默认会话',
+            updatedAt: Date.now(),
+            preview: '你好，我是 BizClaw 助手。',
+          },
+        ]),
+        selectedSessionId: ref('s-1'),
+        messages: ref([
+          {
+            id: 'm-1',
+            role: 'assistant',
+            content: '你好，我是 BizClaw 助手。',
+            createdAt: Date.now(),
+            status: 'done',
+          },
+        ]),
+        loading: ref(false),
+        sending: ref(false),
+        error: ref<string | null>(null),
+        createSession: vi.fn(),
+        selectSession: vi.fn(),
+        sendMessage: vi.fn(),
+        retryMessage: vi.fn(),
+      },
       advancedOpen: ref(true),
       agentsState: {
         agents,
@@ -485,7 +512,7 @@ describe('App operations center', () => {
       node.textContent?.trim(),
     )
 
-    expect(navButtons).toEqual(['概览', '安装与更新', '代理', '连接与配置', '运行日志', '技能', '设置'])
+    expect(navButtons).toEqual(['概览', '聊天', '连接与配置', '代理', '技能', '运行日志', '设置', '安装与更新'])
     expect(host.textContent).toContain('BIZCLAW')
     expect(host.textContent).not.toContain('操作中心')
     expect(host.textContent).not.toContain('macOS 本机')
@@ -598,6 +625,27 @@ describe('App operations center', () => {
     expect(host.textContent).toContain('保存并测试')
     expect(host.textContent).toContain('启动托管')
     expect(host.textContent).toContain('停止托管')
+  })
+
+  it('renders the chat workspace with session list and composer', async () => {
+    const { default: App } = await import('./App.vue')
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+
+    app = createApp(App)
+    app.mount(host)
+    await nextTick()
+
+    const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+      .find((node) => node.textContent?.includes('聊天'))
+    button?.click()
+    await nextTick()
+
+    expect(host.textContent).toContain('聊天')
+    expect(host.textContent).toContain('默认会话')
+    expect(host.textContent).toContain('你好，我是 BizClaw 助手。')
+    expect(host.textContent).toContain('发送')
   })
 
   it('keeps connection test diagnostics collapsed by default in the modal', async () => {

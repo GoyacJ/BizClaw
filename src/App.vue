@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 
 import AppAgentsSection from './components/AppAgentsSection.vue'
+import AppChatSection from './components/AppChatSection.vue'
 import AppConnectionSection from './components/AppConnectionSection.vue'
 import AppInstallSection from './components/AppInstallSection.vue'
 import AppOverviewSection from './components/AppOverviewSection.vue'
@@ -19,6 +20,7 @@ const {
   activeSection,
   advancedOpen,
   agentsState,
+  chatState,
   bizclawUpdate,
   bizclawUpdateActionLabel,
   bizclawUpdateBlockedReason,
@@ -94,12 +96,13 @@ const {
 
 const sections = computed(() => ([
   { key: 'overview', label: translate('nav.overview') },
-  { key: 'install', label: translate('nav.install') },
-  { key: 'agent', label: translate('nav.agent') },
+  { key: 'chat', label: translate('nav.chat') },
   { key: 'connection', label: translate('nav.connection') },
-  { key: 'runtime', label: translate('nav.runtime') },
+  { key: 'agent', label: translate('nav.agent') },
   { key: 'skill', label: translate('nav.skill') },
+  { key: 'runtime', label: translate('nav.runtime') },
   { key: 'settings', label: translate('nav.settings') },
+  { key: 'install', label: translate('nav.install') },
 ] as const))
 
 const sectionTitle = computed(() => sections.value.find((item) => item.key === activeSection.value)?.label ?? translate('nav.overview'))
@@ -208,6 +211,7 @@ const connectionSectionState = {
 }
 
 const agentSectionState = agentsState
+const chatSectionState = chatState
 
 const skillSectionState = skillsState
 
@@ -325,6 +329,11 @@ function connectionStepLabel(status: ConnectionTestModalStep['status']) {
           :windows-admin-notice="windowsAdminNotice"
           :go-install="goInstall"
           :go-connection="goConnection"
+        />
+
+        <AppChatSection
+          v-else-if="activeSection === 'chat'"
+          :state="chatSectionState"
         />
 
         <AppAgentsSection

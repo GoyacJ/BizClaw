@@ -20,6 +20,8 @@ const apiMocks = vi.hoisted(() => ({
   getOperationStatus: vi.fn(),
   getOperationEvents: vi.fn(),
   installOpenClaw: vi.fn(),
+  listChatSessions: vi.fn(),
+  listChatMessages: vi.fn(),
   listOpenClawAgentBindings: vi.fn(),
   listOpenClawAgents: vi.fn(),
   listOpenClawSkills: vi.fn(),
@@ -39,6 +41,8 @@ const apiMocks = vi.hoisted(() => ({
   stopOpenClawOperation: vi.fn(),
   stopRuntime: vi.fn(),
   testConnection: vi.fn(),
+  sendChatMessage: vi.fn(),
+  createChatSession: vi.fn(),
   removeOpenClawAgentBindings: vi.fn(),
   updateOpenClaw: vi.fn(),
   updateOpenClawAgentIdentity: vi.fn(),
@@ -67,6 +71,8 @@ vi.mock('@/lib/api', () => ({
   getOpenClawSkillInfo: apiMocks.getOpenClawSkillInfo,
   installClawHubSkill: apiMocks.installClawHubSkill,
   installOpenClaw: apiMocks.installOpenClaw,
+  listChatSessions: apiMocks.listChatSessions,
+  listChatMessages: apiMocks.listChatMessages,
   listOpenClawAgentBindings: apiMocks.listOpenClawAgentBindings,
   listOpenClawAgents: apiMocks.listOpenClawAgents,
   listOpenClawSkills: apiMocks.listOpenClawSkills,
@@ -87,6 +93,8 @@ vi.mock('@/lib/api', () => ({
   stopRuntime: apiMocks.stopRuntime,
   streamLogs: apiMocks.streamLogs,
   testConnection: apiMocks.testConnection,
+  sendChatMessage: apiMocks.sendChatMessage,
+  createChatSession: apiMocks.createChatSession,
   removeOpenClawAgentBindings: apiMocks.removeOpenClawAgentBindings,
   updateOpenClaw: apiMocks.updateOpenClaw,
   updateOpenClawAgentIdentity: apiMocks.updateOpenClawAgentIdentity,
@@ -326,6 +334,255 @@ describe('useAppModel', () => {
 
     expect(apiMocks.listOpenClawAgents).toHaveBeenCalledTimes(1)
     expect(apiMocks.listOpenClawSkills).toHaveBeenCalledTimes(1)
+  })
+
+  it('loads chat sessions lazily and sends a message in the selected session', async () => {
+    apiMocks.detectEnvironment.mockResolvedValue(createSnapshot())
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.listChatSessions.mockResolvedValue([
+      {
+        id: 'session-1',
+        title: '默认会话',
+        updatedAt: Date.now(),
+      },
+    ])
+    apiMocks.listChatMessages.mockResolvedValue([
+      {
+        id: 'msg-1',
+        role: 'assistant',
+        content: '你好，我是 BizClaw。',
+        createdAt: Date.now(),
+        status: 'done',
+      },
+    ])
+    apiMocks.sendChatMessage.mockResolvedValue({
+      userMessage: {
+        id: 'msg-2',
+        role: 'user',
+        content: '你好',
+        createdAt: Date.now(),
+        status: 'done',
+      },
+      assistantMessage: {
+        id: 'msg-3',
+        role: 'assistant',
+        content: '你好，有什么可以帮你？',
+        createdAt: Date.now(),
+        status: 'done',
+      },
+    })
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onEnvironmentSnapshot.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+    expect(apiMocks.listChatSessions).not.toHaveBeenCalled()
+
+    model.activeSection.value = 'chat'
+    await flushPromises()
+
+    expect(apiMocks.listChatSessions).toHaveBeenCalledTimes(1)
+    expect(apiMocks.listChatMessages).toHaveBeenCalledWith('session-1')
+    expect(model.chatState.sessions.value[0]?.title).toBe('默认会话')
+
+    await model.chatState.sendMessage('你好')
+    await flushPromises()
+
+    expect(apiMocks.sendChatMessage).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      content: '你好',
+    })
+    expect(model.chatState.messages.value[model.chatState.messages.value.length - 1]?.role).toBe('assistant')
+  })
+
+  it('marks the correct optimistic message as failed when multiple sends overlap', async () => {
+    apiMocks.detectEnvironment.mockResolvedValue(createSnapshot())
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.listChatSessions.mockResolvedValue([
+      {
+        id: 'session-1',
+        title: '默认会话',
+        updatedAt: Date.now(),
+      },
+    ])
+    apiMocks.listChatMessages.mockResolvedValue([])
+    let resolveFirstSend!: (value: {
+      userMessage: {
+        id: string
+        role: 'user'
+        content: string
+        createdAt: number
+        status: 'done'
+      }
+      assistantMessage: {
+        id: string
+        role: 'assistant'
+        content: string
+        createdAt: number
+        status: 'done'
+      }
+    }) => void
+    apiMocks.sendChatMessage
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveFirstSend = resolve
+      }))
+      .mockRejectedValueOnce(new Error('network lost'))
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onEnvironmentSnapshot.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+    model.activeSection.value = 'chat'
+    await flushPromises()
+
+    const firstSend = model.chatState.sendMessage('first message')
+    await nextTick()
+    const secondSend = model.chatState.sendMessage('second message')
+    await flushPromises()
+
+    resolveFirstSend({
+      userMessage: {
+        id: 'msg-user-1',
+        role: 'user',
+        content: 'first message',
+        createdAt: Date.now(),
+        status: 'done',
+      },
+      assistantMessage: {
+        id: 'msg-assistant-1',
+        role: 'assistant',
+        content: 'done',
+        createdAt: Date.now(),
+        status: 'done',
+      },
+    })
+    await Promise.allSettled([firstSend, secondSend])
+    await flushPromises()
+
+    const failedSecond = model.chatState.messages.value.find((item) => item.content === 'second message')
+    expect(failedSecond?.status).toBe('error')
+    expect(model.chatState.messages.value.some((item) => item.content === 'first message' && item.status === 'done')).toBe(true)
+  })
+
+  it('ignores stale message-list response when switching sessions quickly', async () => {
+    apiMocks.detectEnvironment.mockResolvedValue(createSnapshot())
+    apiMocks.streamLogs.mockResolvedValue([])
+    apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
+    apiMocks.getOperationEvents.mockResolvedValue([])
+    apiMocks.listChatSessions.mockResolvedValue([
+      {
+        id: 'session-1',
+        title: '会话1',
+        updatedAt: Date.now() - 1000,
+      },
+      {
+        id: 'session-2',
+        title: '会话2',
+        updatedAt: Date.now(),
+      },
+    ])
+    let resolveSession1!: (messages: Array<{
+      id: string
+      role: 'assistant'
+      content: string
+      createdAt: number
+      status: 'done'
+    }>) => void
+    apiMocks.listChatMessages
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveSession1 = resolve
+      }))
+      .mockResolvedValueOnce([
+        {
+          id: 'session-2-message',
+          role: 'assistant',
+          content: '来自会话2',
+          createdAt: Date.now(),
+          status: 'done',
+        },
+      ])
+    bizclawUpdaterMocks.getCurrentBizClawVersion.mockResolvedValue('0.1.8')
+    apiMocks.onRuntimeLog.mockResolvedValue(() => {})
+    apiMocks.onRuntimeStatus.mockResolvedValue(() => {})
+    apiMocks.onEnvironmentSnapshot.mockResolvedValue(() => {})
+    apiMocks.onOperationStatus.mockResolvedValue(() => {})
+    apiMocks.onOperationEvent.mockResolvedValue(() => {})
+    apiMocks.onConnectionTestEvent.mockResolvedValue(() => {})
+    apiMocks.onRefreshRequested.mockResolvedValue(() => {})
+
+    let model!: ReturnType<typeof useAppModel>
+    const TestHarness = defineComponent({
+      setup() {
+        model = useAppModel()
+        return () => h('div')
+      },
+    })
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    app = createApp(TestHarness)
+    app.mount(host)
+
+    await flushPromises()
+    model.activeSection.value = 'chat'
+    await nextTick()
+    await model.chatState.selectSession('session-2')
+    await flushPromises()
+
+    resolveSession1([
+      {
+        id: 'session-1-message',
+        role: 'assistant',
+        content: '来自会话1',
+        createdAt: Date.now(),
+        status: 'done',
+      },
+    ])
+    await flushPromises()
+
+    expect(model.chatState.selectedSessionId.value).toBe('session-2')
+    expect(model.chatState.messages.value).toHaveLength(1)
+    expect(model.chatState.messages.value[0]?.id).toBe('session-2-message')
   })
 
   it('refreshes agent state after creating a new agent', async () => {

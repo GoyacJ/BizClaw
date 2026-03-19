@@ -15,7 +15,7 @@ const props = defineProps<{
 </script>
 
 <template>
-  <footer class="status-bar surface-card">
+  <footer class="status-bar">
     <div
       class="status-bar-latest-log"
       :title="props.latestLogTitle ?? props.latestLogSummary"

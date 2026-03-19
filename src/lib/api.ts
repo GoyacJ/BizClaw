@@ -2,10 +2,13 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 import type {
+  ChatMessage,
+  ChatSessionSummary,
   ClawHubSkillSearchResult,
   CompanyProfile,
   ConnectionTestEvent,
   ConnectionTestResult,
+  CreateChatSessionRequest,
   CreateLocalSkillRequest,
   CreateOpenClawAgentRequest,
   EnvironmentSnapshot,
@@ -21,6 +24,8 @@ import type {
   OperationTaskSnapshot,
   PersistedSettings,
   SearchClawHubSkillsRequest,
+  SendChatMessageRequest,
+  SendChatMessageResult,
   SupportUrlTarget,
   UpdateOpenClawAgentIdentityRequest,
   UiPreferences,
@@ -74,6 +79,27 @@ const idleOperationTask: OperationTaskSnapshot = {
   lastResult: null,
   startedAt: null,
   endedAt: null,
+}
+
+const browserChatSessions: ChatSessionSummary[] = [
+  {
+    id: 'local-session',
+    title: '默认会话',
+    updatedAt: Date.now(),
+    preview: '你好，我是 BizClaw 助手。',
+  },
+]
+
+const browserChatMessagesBySessionId: Record<string, ChatMessage[]> = {
+  'local-session': [
+    {
+      id: 'local-msg-assistant',
+      role: 'assistant',
+      content: '你好，我是 BizClaw 助手。',
+      createdAt: Date.now(),
+      status: 'done',
+    },
+  ],
 }
 
 const noopUnlisten: UnlistenFn = () => {}
@@ -194,6 +220,66 @@ export const saveProfile = (
     token,
     sshPassword,
   })
+
+export const listChatSessions = () => (
+  canInvokeTauri()
+    ? tauriInvoke<ChatSessionSummary[]>('list_chat_sessions')
+    : Promise.resolve([...browserChatSessions])
+)
+
+export const createChatSession = (request: CreateChatSessionRequest = {}) => (
+  canInvokeTauri()
+    ? tauriInvoke<ChatSessionSummary>('create_chat_session', { request })
+    : (() => {
+        const session: ChatSessionSummary = {
+          id: `local-session-${Date.now()}`,
+          title: request.title?.trim() || '新会话',
+          updatedAt: Date.now(),
+          preview: '',
+        }
+        browserChatSessions.unshift(session)
+        browserChatMessagesBySessionId[session.id] = []
+        return Promise.resolve(session)
+      })()
+)
+
+export const listChatMessages = (sessionId: string) => (
+  canInvokeTauri()
+    ? tauriInvoke<ChatMessage[]>('list_chat_messages', { sessionId })
+    : Promise.resolve([...(browserChatMessagesBySessionId[sessionId] ?? [])])
+)
+
+export const sendChatMessage = (request: SendChatMessageRequest) => (
+  canInvokeTauri()
+    ? tauriInvoke<SendChatMessageResult>('send_chat_message', { request })
+    : (() => {
+        const now = Date.now()
+        const userMessage: ChatMessage = {
+          id: `local-user-${now}`,
+          role: 'user',
+          content: request.content,
+          createdAt: now,
+          status: 'done',
+        }
+        const assistantMessage: ChatMessage = {
+          id: `local-assistant-${now + 1}`,
+          role: 'assistant',
+          content: `已收到：${request.content}`,
+          createdAt: now + 1,
+          status: 'done',
+        }
+        if (!browserChatMessagesBySessionId[request.sessionId]) {
+          browserChatMessagesBySessionId[request.sessionId] = []
+        }
+        browserChatMessagesBySessionId[request.sessionId].push(userMessage, assistantMessage)
+        const session = browserChatSessions.find((item) => item.id === request.sessionId)
+        if (session) {
+          session.updatedAt = now + 1
+          session.preview = assistantMessage.content
+        }
+        return Promise.resolve({ userMessage, assistantMessage })
+      })()
+)
 
 export const listOpenClawAgents = () =>
   tauriInvoke<OpenClawAgentSummary[]>('list_openclaw_agents')

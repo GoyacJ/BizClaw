@@ -38,6 +38,7 @@ const props = defineProps<{
 
 const installOpen = ref(false)
 const hasSearched = ref(false)
+const filterText = ref('')
 const installDraft = reactive<{
   query: string
   location: InstallClawHubSkillRequest['location']
@@ -54,7 +55,15 @@ const groupedSkills = computed(() => {
     { key: 'external', label: translate('skills.external'), skills: [] },
   ]
 
-  for (const skill of props.state.inventory.value.skills) {
+  const normalizedFilter = filterText.value.trim().toLowerCase()
+  const visibleSkills = normalizedFilter
+    ? props.state.inventory.value.skills.filter((skill) => (
+        skill.name.toLowerCase().includes(normalizedFilter)
+        || skill.description.toLowerCase().includes(normalizedFilter)
+      ))
+    : props.state.inventory.value.skills
+
+  for (const skill of visibleSkills) {
     const group = groups.find((entry) => entry.key === skill.locationKind)
     group?.skills.push(skill)
   }
@@ -191,6 +200,10 @@ async function deleteSelectedSkill() {
         </div>
 
         <div v-else class="page-stack">
+          <label class="field field--span">
+            <span>{{ translate('skills.filterLabel') }}</span>
+            <input v-model="filterText" :placeholder="translate('skills.filterPlaceholder')" />
+          </label>
           <section v-for="group in groupedSkills" :key="group.key" class="management-group">
             <div class="section-header">
               <div>

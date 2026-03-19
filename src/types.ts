@@ -179,6 +179,38 @@ export interface LogEntry {
   timestampMs: number
 }
 
+export type ChatMessageRole = 'system' | 'user' | 'assistant'
+export type ChatMessageStatus = 'sending' | 'done' | 'error'
+
+export interface ChatSessionSummary {
+  id: string
+  title: string
+  updatedAt: number
+  preview?: string | null
+}
+
+export interface ChatMessage {
+  id: string
+  role: ChatMessageRole
+  content: string
+  createdAt: number
+  status: ChatMessageStatus
+}
+
+export interface CreateChatSessionRequest {
+  title?: string
+}
+
+export interface SendChatMessageRequest {
+  sessionId: string
+  content: string
+}
+
+export interface SendChatMessageResult {
+  userMessage: ChatMessage
+  assistantMessage: ChatMessage
+}
+
 export interface WslStatus {
   available: boolean
   distroName: string

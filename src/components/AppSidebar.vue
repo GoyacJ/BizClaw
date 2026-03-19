@@ -80,6 +80,7 @@ function sidebarToggleLabel() {
         :key="item.key"
         class="nav-button"
         :data-active="props.activeSection === item.key"
+        :aria-current="props.activeSection === item.key ? 'page' : undefined"
         :aria-label="item.label"
         :title="item.label"
         @click="emit('selectSection', item.key)"
@@ -115,6 +116,11 @@ function sidebarToggleLabel() {
             <path d="M7 7H13L17 11V17H7V7Z" fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="1.8" />
             <path d="M13 7V11H17" fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="1.8" />
             <path d="M10 14H14" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.8" />
+          </svg>
+          <svg v-else-if="item.key === 'chat'" viewBox="0 0 24 24">
+            <path d="M7 7.5H17C18.1046 7.5 19 8.39543 19 9.5V14.5C19 15.6046 18.1046 16.5 17 16.5H11L7.5 19V16.5H7C5.89543 16.5 5 15.6046 5 14.5V9.5C5 8.39543 5.89543 7.5 7 7.5Z" fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="1.8" />
+            <path d="M8.8 11H15.2" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.8" />
+            <path d="M8.8 13.5H12.8" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.8" />
           </svg>
           <svg v-else viewBox="0 0 24 24">
             <path d="M12 4.5L13.5645 6.11498L15.8076 5.6527L16.4084 7.86553L18.5862 8.56283L17.889 10.7406L19.5 12L17.889 13.2594L18.5862 15.4372L16.4084 16.1345L15.8076 18.3473L13.5645 17.885L12 19.5L10.4355 17.885L8.19239 18.3473L7.59161 16.1345L5.41378 15.4372L6.11098 13.2594L4.5 12L6.11098 10.7406L5.41378 8.56283L7.59161 7.86553L8.19239 5.6527L10.4355 6.11498L12 4.5Z" fill="none" stroke="currentColor" stroke-width="1.6" />

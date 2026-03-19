@@ -63,6 +63,23 @@ describe('AppConnectionSection', () => {
     expect(host.textContent).toContain('Gateway 鉴权失败。')
     expect(host.textContent).toContain('gateway auth failed')
   })
+
+  it('renders a dedicated diagnostics card when inline result is visible', async () => {
+    host = document.createElement('div')
+    document.body.appendChild(host)
+
+    app = createApp(AppConnectionSection, {
+      state: createConnectionSectionState({
+        connectionTestInlinePhase: 'success',
+        connectionTestInlineSummary: 'Gateway 鉴权通过。',
+        connectionTestInlineVisible: true,
+      }),
+    })
+    app.mount(host)
+    await nextTick()
+
+    expect(host.querySelector('.connection-diagnostics-card')).not.toBeNull()
+  })
 })
 
 function createConnectionSectionState(overrides: Partial<{

@@ -124,40 +124,6 @@ const props = defineProps<{
           {{ translate('connection.saveAndTest') }}
         </button>
       </div>
-      <div v-if="props.state.connectionTestInlineVisible.value" class="connection-inline-feedback">
-        <div class="section-header">
-          <div>
-            <p class="eyebrow">{{ translate('connectionTest.modalEyebrow') }}</p>
-            <h4>{{ translate('connectionTest.modalTitle') }}</h4>
-          </div>
-          <span
-            class="status-chip"
-            :data-tone="props.state.connectionTestInlinePhase.value === 'success' ? 'success' : props.state.connectionTestInlinePhase.value === 'error' ? 'error' : 'active'"
-          >
-            {{
-              props.state.connectionTestInlinePhase.value === 'success'
-                ? translate('connectionTest.pass')
-                : props.state.connectionTestInlinePhase.value === 'error'
-                  ? translate('connectionTest.fail')
-                  : translate('connectionTest.running')
-            }}
-          </span>
-        </div>
-        <p class="supporting-text">{{ props.state.connectionTestInlineSummary.value }}</p>
-        <div
-          v-if="props.state.connectionTestInlinePhase.value === 'error' && props.state.connectionTestInlineResult.value && (props.state.connectionTestInlineResult.value.stdout || props.state.connectionTestInlineResult.value.stderr)"
-          class="connection-test-output"
-        >
-          <div v-if="props.state.connectionTestInlineResult.value.stdout">
-            <span class="card-label">{{ translate('common.stdout') }}</span>
-            <pre>{{ props.state.connectionTestInlineResult.value.stdout }}</pre>
-          </div>
-          <div v-if="props.state.connectionTestInlineResult.value.stderr">
-            <span class="card-label">{{ translate('common.stderr') }}</span>
-            <pre>{{ props.state.connectionTestInlineResult.value.stderr }}</pre>
-          </div>
-        </div>
-      </div>
     </article>
 
     <article class="surface-card section-card">
@@ -208,6 +174,41 @@ const props = defineProps<{
         {{ props.state.connectDisabledReason.value }}
       </p>
       <p v-if="props.state.runtimeError.value" class="error-banner">{{ props.state.runtimeError.value }}</p>
+    </article>
+
+    <article v-if="props.state.connectionTestInlineVisible.value" class="surface-card section-card connection-diagnostics-card">
+      <div class="section-header">
+        <div>
+          <p class="eyebrow">{{ translate('connectionTest.modalEyebrow') }}</p>
+          <h3>{{ translate('connectionTest.modalTitle') }}</h3>
+        </div>
+        <span
+          class="status-chip"
+          :data-tone="props.state.connectionTestInlinePhase.value === 'success' ? 'success' : props.state.connectionTestInlinePhase.value === 'error' ? 'error' : 'active'"
+        >
+          {{
+            props.state.connectionTestInlinePhase.value === 'success'
+              ? translate('connectionTest.pass')
+              : props.state.connectionTestInlinePhase.value === 'error'
+                ? translate('connectionTest.fail')
+                : translate('connectionTest.running')
+          }}
+        </span>
+      </div>
+      <p class="supporting-text">{{ props.state.connectionTestInlineSummary.value }}</p>
+      <div
+        v-if="props.state.connectionTestInlinePhase.value === 'error' && props.state.connectionTestInlineResult.value && (props.state.connectionTestInlineResult.value.stdout || props.state.connectionTestInlineResult.value.stderr)"
+        class="connection-test-output"
+      >
+        <div v-if="props.state.connectionTestInlineResult.value.stdout">
+          <span class="card-label">{{ translate('common.stdout') }}</span>
+          <pre>{{ props.state.connectionTestInlineResult.value.stdout }}</pre>
+        </div>
+        <div v-if="props.state.connectionTestInlineResult.value.stderr">
+          <span class="card-label">{{ translate('common.stderr') }}</span>
+          <pre>{{ props.state.connectionTestInlineResult.value.stderr }}</pre>
+        </div>
+      </div>
     </article>
   </section>
 </template>

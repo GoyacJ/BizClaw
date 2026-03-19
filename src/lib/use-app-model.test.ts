@@ -1,6 +1,7 @@
 import { createApp, defineComponent, h, nextTick } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { translate } from '@/lib/i18n'
 import { useAppModel } from './use-app-model'
 import type { EnvironmentSnapshot, LogEntry, OperationEvent, OperationTaskSnapshot } from '@/types'
 
@@ -2501,7 +2502,7 @@ describe('useAppModel', () => {
     await flushPromises()
 
     const openclawCard = model.overviewCards.value.find((card) => card.label === 'OpenClaw')
-    expect(openclawCard?.detail).toContain('请手动以管理员身份运行 BizClaw')
+    expect(openclawCard?.detail).toContain(translate('overview.windowsAdminRunHint'))
   })
 })
 

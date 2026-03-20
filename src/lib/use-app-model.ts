@@ -35,6 +35,7 @@ import {
   openManualInstall,
   openSupportUrl,
   saveProfile,
+  saveAndTestConnection,
   saveUiPreferences,
   sendChatMessage,
   searchClawHubSkills,
@@ -42,7 +43,6 @@ import {
   stopOpenClawOperation,
   stopRuntime,
   streamLogs,
-  testConnection,
   removeOpenClawAgentBindings,
   updateOpenClaw,
   updateOpenClawAgentIdentity,
@@ -1504,7 +1504,6 @@ export function useAppModel() {
     connectionTestModal.summary = translate('connectionTest.runningSummary')
     connectionTestModal.result = null
     connectionTestModal.steps = createConnectionTestSteps()
-    markConnectionTestStep('save', 'success', translate('connectionTest.saved'))
     return connectionTestModalSession
   }
 
@@ -1826,12 +1825,6 @@ export function useAppModel() {
 
   async function saveAndTest() {
     activeSection.value = 'connection'
-    const saved = await withBooleanBusy(saveBusy, 'save', async () => persistProfile())
-    if (!saved) {
-      return
-    }
-
-    clearActionError('save')
     const connectionTestSession = openConnectionTestModal()
     await nextTick()
 
@@ -1840,7 +1833,16 @@ export function useAppModel() {
     lastErrorAction.value = null
 
     try {
-      const result = await testConnection()
+      const normalizedCompanyProfile = normalizeCompanyProfileDraft(companyProfile)
+      const result = await saveAndTestConnection(
+        normalizedCompanyProfile,
+        { ...userProfile },
+        { ...targetProfile },
+        tokenInput.value,
+        sshPasswordInput.value,
+      )
+      tokenInput.value = ''
+      sshPasswordInput.value = ''
       applyConnectionTestResult(result, connectionTestSession)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)

@@ -60,9 +60,10 @@ use crate::{
         OperationEventSource, OperationEventStatus, OperationKind, OperationRemediation,
         OperationRemediationKind, OperationResult, OperationStep, OperationTaskPhase,
         OperationTaskSnapshot, PersistedSettings, RuntimePhase, RuntimeStatus, RuntimeTarget,
-        SearchClawHubSkillsRequest, SendChatMessageRequest, SendChatMessageResult, SupportUrlTarget, TargetProfile, ThemePreference, TokenStatus,
-        UiPreferences, UpdateOpenClawAgentIdentityRequest, UserProfile, WindowsDiscovery,
-        WindowsDiscoveryPhase, WindowsNativeDiscovery, WindowsWslDiscovery, WslStatus,
+        SearchClawHubSkillsRequest, SendChatMessageRequest, SendChatMessageResult,
+        SupportUrlTarget, TargetProfile, ThemePreference, TokenStatus, UiPreferences,
+        UpdateOpenClawAgentIdentityRequest, UserProfile, WindowsDiscovery, WindowsDiscoveryPhase,
+        WindowsNativeDiscovery, WindowsWslDiscovery, WslStatus,
     },
     validation::{
         saved_settings_are_complete, validate_company_profile_with_locale,
@@ -180,9 +181,12 @@ impl Drop for PortTaskGuard {
     }
 }
 
-const CONNECTION_TEST_TIMEOUT_MS: u64 = 8_000;
+const CONNECTION_TEST_TIMEOUT_MS: u64 = 3_000;
+const CONNECTION_TEST_PROCESS_TIMEOUT_MS: u64 = 3_500;
 const CONNECTION_TEST_TUNNEL_READY_TIMEOUT: Duration = Duration::from_secs(6);
 const CONNECTION_TEST_TUNNEL_POLL_INTERVAL: Duration = Duration::from_millis(150);
+const CONNECTION_TEST_GATEWAY_RETRY_DELAY: Duration = Duration::from_millis(400);
+const CONNECTION_TEST_GATEWAY_MAX_ATTEMPTS: usize = 2;
 const WINDOWS_INSTALL_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn locale_text(locale: LocalePreference, zh: &'static str, en: &'static str) -> &'static str {
@@ -554,6 +558,107 @@ pub fn save_profile(
 }
 
 #[tauri::command]
+pub async fn save_and_test_connection(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    company_profile: CompanyProfile,
+    user_profile: UserProfile,
+    target_profile: TargetProfile,
+    token: String,
+    ssh_password: String,
+) -> Result<ConnectionTestResult, String> {
+    let locale = current_locale(&app);
+    let guard =
+        PortTaskGuard::acquire(state.port_task_active.clone(), locale).map_err(err_to_string)?;
+    let runtime_status = snapshot_status(&state.runtime);
+    if matches!(
+        runtime_status.phase,
+        RuntimePhase::Connecting | RuntimePhase::Running
+    ) {
+        return Err(if matches!(locale, LocalePreference::EnUs) {
+            "Stop the hosted runtime before running a connection test.".into()
+        } else {
+            "鎵樼杩愯涓椂涓嶈兘鎵ц杩炴帴娴嬭瘯锛岃鍏堝仠姝㈡墭绠°€?".into()
+        });
+    }
+
+    emit_connection_test_event(
+        &app,
+        ConnectionTestStep::Save,
+        ConnectionTestEventStatus::Running,
+        locale_owned(
+            locale,
+            "Saving connection settings",
+            "Saving connection settings",
+        ),
+    );
+
+    let settings = PersistedSettings {
+        company_profile,
+        user_profile,
+        target_profile,
+    };
+    let store = settings_store(&app).map_err(err_to_string)?;
+    let token_store = token_store(&app).map_err(err_to_string)?;
+    let ssh_password_store = ssh_password_store(&app).map_err(err_to_string)?;
+    let credentials = persist_profile_atomic(
+        locale,
+        &store,
+        &token_store,
+        &ssh_password_store,
+        &settings,
+        &token,
+        &ssh_password,
+    )
+    .map_err(|error| {
+        let message = err_to_string(error);
+        emit_connection_test_event(
+            &app,
+            ConnectionTestStep::Save,
+            ConnectionTestEventStatus::Error,
+            message.clone(),
+        );
+        message
+    })?;
+
+    emit_connection_test_event(
+        &app,
+        ConnectionTestStep::Save,
+        ConnectionTestEventStatus::Success,
+        locale_owned(
+            locale,
+            "Connection settings saved",
+            "Connection settings saved",
+        ),
+    );
+
+    mark_configured(&state.runtime, &app);
+    let _ = app_menu::refresh_status_menu_from_state(&app);
+
+    let target_profile = settings.target_profile.clone();
+    let company_profile = settings.company_profile.clone();
+    let runtime_target =
+        resolve_runtime_target(current_platform().map_err(err_to_string)?, &target_profile);
+    let app_handle = app.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
+        run_connection_test(
+            &app_handle,
+            locale,
+            runtime_target,
+            &target_profile,
+            &company_profile,
+            &credentials.token,
+            credentials.ssh_password.as_deref(),
+        )
+        .map_err(err_to_string)
+    })
+    .await
+    .map_err(err_to_string)?
+}
+
+#[tauri::command]
 pub async fn list_openclaw_agents() -> Result<Vec<OpenClawAgentSummary>, String> {
     run_blocking_command(openclaw_management::list_agents).await
 }
@@ -633,7 +738,11 @@ pub fn send_chat_message(
         .lock()
         .map_err(|_| "chat store mutex poisoned".to_string())?;
 
-    if !store.sessions.iter().any(|session| session.id == request.session_id) {
+    if !store
+        .sessions
+        .iter()
+        .any(|session| session.id == request.session_id)
+    {
         return Err("chat session not found".to_string());
     }
 
@@ -1553,6 +1662,12 @@ fn inspect_token_state(result: Result<Option<String>>) -> TokenState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PersistedConnectionCredentials {
+    token: String,
+    ssh_password: Option<String>,
+}
+
 fn persist_profile_atomic(
     locale: LocalePreference,
     settings_store: &impl SettingsStoreAccess,
@@ -1561,7 +1676,7 @@ fn persist_profile_atomic(
     settings: &PersistedSettings,
     token: &str,
     ssh_password: &str,
-) -> Result<()> {
+) -> Result<PersistedConnectionCredentials> {
     validate_company_profile_with_locale(&settings.company_profile, locale)?;
     validate_user_profile_with_locale(&settings.user_profile, locale)?;
     validate_target_profile_with_locale(&settings.target_profile, locale)?;
@@ -1633,7 +1748,18 @@ fn persist_profile_atomic(
         return Err(save_error);
     }
 
-    Ok(())
+    Ok(PersistedConnectionCredentials {
+        token: if should_write_new_token {
+            trimmed_token.to_string()
+        } else {
+            previous_token.expect("validated existing token must be present")
+        },
+        ssh_password: if should_write_new_ssh_password {
+            Some(trimmed_ssh_password.to_string())
+        } else {
+            previous_ssh_password
+        },
+    })
 }
 
 fn rollback_secret(secret_store: &impl SecretStore, previous_secret: Option<&str>) -> Result<()> {
@@ -1704,14 +1830,15 @@ fn run_connection_test(
     ))?;
 
     let result: Result<ConnectionTestResult> = (|| {
-        thread::sleep(Duration::from_secs(2));
         ensure_child_alive(
             &mut ssh_child,
             locale,
             locale_text(locale, "SSH 隧道", "SSH tunnel"),
         )?;
         wait_for_local_port_ready(
+            &mut ssh_child,
             locale,
+            locale_text(locale, "SSH 闅ч亾", "SSH tunnel"),
             company_profile.local_port,
             CONNECTION_TEST_TUNNEL_READY_TIMEOUT,
             CONNECTION_TEST_TUNNEL_POLL_INTERVAL,
@@ -1735,7 +1862,9 @@ fn run_connection_test(
             .to_string(),
         );
 
-        let gateway_result = run_command_capture(
+        let gateway_result = run_gateway_probe_with_retry(
+            app,
+            locale,
             &build_gateway_status_command(
                 runtime_target,
                 target_profile,
@@ -1743,7 +1872,6 @@ fn run_connection_test(
                 token,
                 CONNECTION_TEST_TIMEOUT_MS,
             ),
-            locale,
         )
         .map_err(|error| {
             emit_connection_test_event(
@@ -1872,8 +2000,9 @@ fn evaluate_gateway_probe(result: &CapturedOutput) -> GatewayProbeEvaluation {
 
     let Some(parsed) = parse_gateway_status_output(&result.stdout) else {
         return GatewayProbeEvaluation {
-            success: true,
-            reason: None,
+            success: false,
+            reason: detect_gateway_probe_reason(&result.stdout, &result.stderr)
+                .or_else(|| Some("unexpected gateway status output".into())),
         };
     };
 
@@ -1998,6 +2127,72 @@ fn build_gateway_status_command(
     }
 }
 
+fn run_gateway_probe_with_retry(
+    app: &AppHandle,
+    locale: LocalePreference,
+    spec: &CommandSpec,
+) -> Result<CapturedOutput> {
+    for attempt in 1..=CONNECTION_TEST_GATEWAY_MAX_ATTEMPTS {
+        let result = run_command_capture_with_timeout(
+            spec,
+            locale,
+            Duration::from_millis(CONNECTION_TEST_PROCESS_TIMEOUT_MS),
+        )?;
+        let evaluation = evaluate_gateway_probe(&result);
+
+        if evaluation.success
+            || attempt == CONNECTION_TEST_GATEWAY_MAX_ATTEMPTS
+            || !should_retry_gateway_probe(&result, evaluation.reason.as_deref())
+        {
+            return Ok(result);
+        }
+
+        emit_connection_test_event(
+            app,
+            ConnectionTestStep::GatewayProbe,
+            ConnectionTestEventStatus::Running,
+            locale_owned(
+                locale,
+                format!(
+                    "Gateway auth is slow to respond. Retrying (attempt {} of {}).",
+                    attempt + 1,
+                    CONNECTION_TEST_GATEWAY_MAX_ATTEMPTS
+                ),
+                format!(
+                    "Gateway authentication is slow to respond. Retrying (attempt {} of {}).",
+                    attempt + 1,
+                    CONNECTION_TEST_GATEWAY_MAX_ATTEMPTS
+                ),
+            ),
+        );
+        thread::sleep(CONNECTION_TEST_GATEWAY_RETRY_DELAY);
+    }
+
+    unreachable!("gateway probe loop must always return")
+}
+
+fn should_retry_gateway_probe(result: &CapturedOutput, reason: Option<&str>) -> bool {
+    let reason = reason.unwrap_or_default().to_ascii_lowercase();
+
+    if reason.contains("pairing required")
+        || reason.contains("unauthorized")
+        || reason.contains("forbidden")
+        || reason.contains("invalid token")
+        || reason.contains("authentication failed")
+        || reason.contains("connect failed")
+        || reason.contains("connection refused")
+        || reason.contains("connection reset")
+        || reason.contains("timeout")
+        || reason.contains("timed out")
+    {
+        return false;
+    }
+
+    parse_gateway_status_output(&result.stdout).is_none()
+        || reason.contains("gateway closed")
+        || reason.contains("eof")
+}
+
 fn spawn_command_spec(spec: &CommandSpec, locale: LocalePreference) -> Result<Child> {
     let mut command = new_command(&spec.program, &spec.args);
     command.stdin(Stdio::null());
@@ -2014,6 +2209,7 @@ fn spawn_command_spec(spec: &CommandSpec, locale: LocalePreference) -> Result<Ch
     })
 }
 
+#[allow(dead_code)]
 fn run_command_capture(spec: &CommandSpec, locale: LocalePreference) -> Result<CapturedOutput> {
     let output = new_command(&spec.program, &spec.args)
         .envs(spec.envs.iter().cloned())
@@ -2026,6 +2222,68 @@ fn run_command_capture(spec: &CommandSpec, locale: LocalePreference) -> Result<C
                 spec.program
             )
         })?;
+
+    Ok(CapturedOutput {
+        success: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+    })
+}
+
+fn run_command_capture_with_timeout(
+    spec: &CommandSpec,
+    locale: LocalePreference,
+    timeout: Duration,
+) -> Result<CapturedOutput> {
+    let mut child = spawn_command_spec(spec, locale)?;
+    let started = std::time::Instant::now();
+
+    loop {
+        if child.try_wait()?.is_some() {
+            return collect_command_output(child, locale, spec);
+        }
+
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let partial = collect_command_output(child, locale, spec).ok();
+            let detail = locale_owned(
+                locale,
+                format!(
+                    "Gateway auth command timed out after {} ms",
+                    timeout.as_millis()
+                ),
+                format!(
+                    "Gateway authentication command timed out after {} ms",
+                    timeout.as_millis()
+                ),
+            );
+            let stderr = partial
+                .as_ref()
+                .map(|output| output.stderr.trim())
+                .filter(|stderr| !stderr.is_empty());
+
+            return Err(anyhow!(match stderr {
+                Some(stderr) => format!("{detail}: {stderr}"),
+                None => detail,
+            }));
+        }
+
+        thread::sleep(CONNECTION_TEST_TUNNEL_POLL_INTERVAL);
+    }
+}
+
+fn collect_command_output(
+    child: Child,
+    locale: LocalePreference,
+    spec: &CommandSpec,
+) -> Result<CapturedOutput> {
+    let output = child.wait_with_output().with_context(|| {
+        format!(
+            "{}: {}",
+            locale_text(locale, "鎵ц鍛戒护澶辫触", "Failed to run command"),
+            spec.program
+        )
+    })?;
 
     Ok(CapturedOutput {
         success: output.status.success(),
@@ -2059,7 +2317,9 @@ fn kill_child(child: &mut Child, locale: LocalePreference) -> Result<()> {
 }
 
 fn wait_for_local_port_ready(
+    child: &mut Child,
     locale: LocalePreference,
+    label: &str,
     port: u16,
     max_wait: Duration,
     poll_interval: Duration,
@@ -2080,7 +2340,10 @@ fn wait_for_local_port_ready(
                     )
                 ));
             }
-            Err(_) => thread::sleep(poll_interval),
+            Err(_) => {
+                ensure_child_alive(child, locale, label)?;
+                thread::sleep(poll_interval);
+            }
         }
     }
 }
@@ -3713,7 +3976,10 @@ fn err_to_string(error: impl std::fmt::Display) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
 
     use anyhow::{anyhow, Result};
     use tauri::{window::Color, Theme};
@@ -3723,12 +3989,14 @@ mod tests {
         evaluate_gateway_probe, gateway_probe_failure_result,
         gateway_probe_failure_result_with_reason, inspect_token_state,
         installer_output_indicates_openclaw_success, load_saved_token, persist_profile_atomic,
+        run_command_capture_with_timeout, should_retry_gateway_probe,
         should_skip_install_for_target, should_treat_plan_as_success,
         update_available_from_versions, window_background_color_for_theme,
         window_theme_for_preference, with_cached_latest_openclaw_version, CapturedOutput,
         ResolvedEnvironment, RuntimePhase, RuntimeStatus, SettingsStoreAccess, TokenState,
     };
     use crate::{
+        runtime::CommandSpec,
         secret_store::{MemorySecretStore, SecretStore},
         types::{
             CompanyProfile, ConnectionTestStep, LocalePreference, OperationKind, PersistedSettings,
@@ -3773,6 +4041,26 @@ mod tests {
 
         fn clear_secret(&self) -> Result<()> {
             Ok(())
+        }
+    }
+
+    fn slow_command_spec() -> CommandSpec {
+        if cfg!(windows) {
+            CommandSpec {
+                program: "powershell".into(),
+                args: vec![
+                    "-NoProfile".into(),
+                    "-Command".into(),
+                    "Start-Sleep -Milliseconds 800".into(),
+                ],
+                envs: Vec::new(),
+            }
+        } else {
+            CommandSpec {
+                program: "sh".into(),
+                args: vec!["-c".into(), "sleep 0.8".into()],
+                envs: Vec::new(),
+            }
         }
     }
 
@@ -4037,6 +4325,62 @@ mod tests {
     }
 
     #[test]
+    fn evaluate_gateway_probe_treats_non_json_output_as_failure() {
+        let evaluation = evaluate_gateway_probe(&CapturedOutput {
+            success: true,
+            stdout: "gateway warmup banner".into(),
+            stderr: String::new(),
+        });
+
+        assert!(!evaluation.success);
+        assert_eq!(evaluation.reason.as_deref(), Some("gateway warmup banner"));
+    }
+
+    #[test]
+    fn should_retry_gateway_probe_skips_definitive_auth_failures() {
+        let result = CapturedOutput {
+            success: false,
+            stdout: String::new(),
+            stderr: "authentication failed".into(),
+        };
+
+        assert!(!should_retry_gateway_probe(
+            &result,
+            Some("authentication failed"),
+        ));
+    }
+
+    #[test]
+    fn should_retry_gateway_probe_only_retries_warmup_style_failures() {
+        let result = CapturedOutput {
+            success: true,
+            stdout: "gateway warmup banner".into(),
+            stderr: String::new(),
+        };
+
+        assert!(!should_retry_gateway_probe(
+            &result,
+            Some("connection refused"),
+        ));
+        assert!(should_retry_gateway_probe(&result, Some("gateway closed"),));
+    }
+
+    #[test]
+    fn run_command_capture_with_timeout_stops_long_running_processes() {
+        let result = run_command_capture_with_timeout(
+            &slow_command_spec(),
+            LocalePreference::EnUs,
+            Duration::from_millis(100),
+        );
+        let error = match result {
+            Ok(_) => panic!("expected the slow command to time out"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("timed out"));
+    }
+
+    #[test]
     fn inspect_token_state_reports_missing_token() {
         let token_state = inspect_token_state(Ok(None));
 
@@ -4120,7 +4464,7 @@ mod tests {
         let ssh_password_store = MemorySecretStore::default();
         ssh_password_store.set_secret("saved-password").unwrap();
 
-        persist_profile_atomic(
+        let credentials = persist_profile_atomic(
             LocalePreference::ZhCn,
             &FakeSettingsStore::default(),
             &token_store,
@@ -4131,6 +4475,8 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(credentials.token, "gateway-token");
+        assert_eq!(credentials.ssh_password.as_deref(), Some("saved-password"));
         assert_eq!(
             ssh_password_store.get_secret().unwrap().as_deref(),
             Some("saved-password"),

@@ -141,6 +141,7 @@ pub fn build_native_gateway_status_command(
             "gateway".into(),
             "status".into(),
             "--json".into(),
+            "--no-probe".into(),
             "--url".into(),
             gateway_status_url(profile),
             "--token".into(),
@@ -159,7 +160,7 @@ pub fn build_wsl_gateway_status_command(
     timeout_ms: u64,
 ) -> CommandSpec {
     let shell_payload = format!(
-        "exec openclaw gateway status --json --url {} --token {} --timeout {}",
+        "exec openclaw gateway status --json --no-probe --url {} --token {} --timeout {}",
         sh_quote(&gateway_status_url(profile)),
         sh_quote(token),
         timeout_ms
@@ -429,6 +430,7 @@ mod tests {
                 "gateway",
                 "status",
                 "--json",
+                "--no-probe",
                 "--url",
                 "ws://127.0.0.1:32001",
                 "--token",
@@ -450,7 +452,7 @@ mod tests {
         assert_eq!(command.program, "wsl.exe");
         assert_eq!(command.args[..5], ["-d", "Ubuntu", "--", "bash", "-lc"]);
         let shell_payload = command.args.last().expect("wsl shell payload");
-        assert!(shell_payload.contains("openclaw gateway status --json"));
+        assert!(shell_payload.contains("openclaw gateway status --json --no-probe"));
         assert!(shell_payload.contains("ws://127.0.0.1:32001"));
         assert!(shell_payload.contains("gateway-token"));
         assert!(shell_payload.contains("--timeout 8000"));

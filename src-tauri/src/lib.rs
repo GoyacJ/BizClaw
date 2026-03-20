@@ -68,6 +68,7 @@ pub fn run() {
             commands::open_manual_install,
             commands::open_support_url,
             commands::save_profile,
+            commands::save_and_test_connection,
             commands::list_chat_sessions,
             commands::create_chat_session,
             commands::list_chat_messages,

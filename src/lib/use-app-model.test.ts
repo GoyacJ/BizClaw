@@ -35,6 +35,7 @@ const apiMocks = vi.hoisted(() => ({
   onRefreshRequested: vi.fn(),
   openSupportUrl: vi.fn(),
   saveProfile: vi.fn(),
+  saveAndTestConnection: vi.fn(),
   saveUiPreferences: vi.fn(),
   searchClawHubSkills: vi.fn(),
   startRuntime: vi.fn(),
@@ -86,6 +87,7 @@ vi.mock('@/lib/api', () => ({
   openManualInstall: apiMocks.openManualInstall,
   openSupportUrl: apiMocks.openSupportUrl,
   saveProfile: apiMocks.saveProfile,
+  saveAndTestConnection: apiMocks.saveAndTestConnection,
   saveUiPreferences: apiMocks.saveUiPreferences,
   searchClawHubSkills: apiMocks.searchClawHubSkills,
   startRuntime: apiMocks.startRuntime,
@@ -1683,6 +1685,8 @@ describe('useAppModel', () => {
     await flushPromises()
     await model.saveOnly()
     await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await flushPromises()
 
     expect(apiMocks.detectEnvironment).toHaveBeenCalledTimes(2)
     expect(apiMocks.streamLogs).toHaveBeenCalledTimes(1)
@@ -1734,7 +1738,7 @@ describe('useAppModel', () => {
         wslDistro: 'Ubuntu',
       },
     })
-    apiMocks.testConnection.mockResolvedValue({
+    apiMocks.saveAndTestConnection.mockResolvedValue({
       success: true,
       step: 'gatewayProbe',
       summary: 'Connection is ready.',
@@ -1766,9 +1770,8 @@ describe('useAppModel', () => {
     await model.saveAndTest()
     await flushPromises()
 
-  expect(apiMocks.saveProfile).toHaveBeenCalledTimes(1)
-  expect(apiMocks.testConnection).toHaveBeenCalledTimes(1)
-  expect(apiMocks.detectEnvironment).toHaveBeenCalledTimes(2)
+    expect(apiMocks.saveAndTestConnection).toHaveBeenCalledTimes(1)
+    expect(apiMocks.detectEnvironment).toHaveBeenCalledTimes(2)
   })
 
   it('allows closing the connection test modal while the test is still running', async () => {
@@ -1776,23 +1779,6 @@ describe('useAppModel', () => {
     apiMocks.streamLogs.mockResolvedValue([])
     apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
     apiMocks.getOperationEvents.mockResolvedValue([])
-    apiMocks.saveProfile.mockResolvedValue({
-      companyProfile: {
-        sshHost: 'example.com',
-        sshUser: 'root',
-        localPort: 18889,
-        remoteBindHost: '127.0.0.1',
-        remoteBindPort: 18789,
-      },
-      userProfile: {
-        displayName: 'BizClaw',
-        autoConnect: true,
-        runInBackground: true,
-      },
-      targetProfile: {
-        wslDistro: 'Ubuntu',
-      },
-    })
     let resolveTest!: (result: {
       success: boolean
       step: 'save' | 'sshTunnel' | 'gatewayProbe'
@@ -1800,7 +1786,7 @@ describe('useAppModel', () => {
       stdout: string
       stderr: string
     }) => void
-    apiMocks.testConnection.mockImplementation(
+    apiMocks.saveAndTestConnection.mockImplementation(
       () =>
         new Promise((resolve) => {
           resolveTest = resolve
@@ -1861,23 +1847,6 @@ describe('useAppModel', () => {
     apiMocks.streamLogs.mockResolvedValue([])
     apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
     apiMocks.getOperationEvents.mockResolvedValue([])
-    apiMocks.saveProfile.mockResolvedValue({
-      companyProfile: {
-        sshHost: 'example.com',
-        sshUser: 'root',
-        localPort: 18889,
-        remoteBindHost: '127.0.0.1',
-        remoteBindPort: 18789,
-      },
-      userProfile: {
-        displayName: 'BizClaw',
-        autoConnect: true,
-        runInBackground: true,
-      },
-      targetProfile: {
-        wslDistro: 'Ubuntu',
-      },
-    })
     const pendingTests: Array<(result: {
       success: boolean
       step: 'save' | 'sshTunnel' | 'gatewayProbe'
@@ -1885,7 +1854,7 @@ describe('useAppModel', () => {
       stdout: string
       stderr: string
     }) => void> = []
-    apiMocks.testConnection.mockImplementation(
+    apiMocks.saveAndTestConnection.mockImplementation(
       () =>
         new Promise((resolve) => {
           pendingTests.push(resolve)
@@ -1970,24 +1939,7 @@ describe('useAppModel', () => {
     apiMocks.streamLogs.mockResolvedValue([])
     apiMocks.getOperationStatus.mockResolvedValue(createIdleTask())
     apiMocks.getOperationEvents.mockResolvedValue([])
-    apiMocks.saveProfile.mockResolvedValue({
-      companyProfile: {
-        sshHost: 'example.com',
-        sshUser: 'root',
-        localPort: 18889,
-        remoteBindHost: '127.0.0.1',
-        remoteBindPort: 18789,
-      },
-      userProfile: {
-        displayName: 'BizClaw',
-        autoConnect: true,
-        runInBackground: true,
-      },
-      targetProfile: {
-        wslDistro: 'Ubuntu',
-      },
-    })
-    apiMocks.testConnection.mockResolvedValue({
+    apiMocks.saveAndTestConnection.mockResolvedValue({
       success: true,
       step: 'gatewayProbe',
       summary: 'Connection is ready.',

@@ -221,6 +221,21 @@ export const saveProfile = (
     sshPassword,
   })
 
+export const saveAndTestConnection = (
+  companyProfile: CompanyProfile,
+  userProfile: UserProfile,
+  targetProfile: TargetProfile,
+  token: string,
+  sshPassword: string,
+) =>
+  tauriInvoke<ConnectionTestResult>('save_and_test_connection', {
+    companyProfile,
+    userProfile,
+    targetProfile,
+    token,
+    sshPassword,
+  })
+
 export const listChatSessions = () => (
   canInvokeTauri()
     ? tauriInvoke<ChatSessionSummary[]>('list_chat_sessions')
